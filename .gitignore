@@ -1,0 +1,9 @@
+.venv/
+dist/
+build/
+__pycache__/
+.pytest_cache/
+*.wav
+*.flac
+.env
+*.log

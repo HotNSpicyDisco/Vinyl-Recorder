@@ -1,0 +1,43 @@
+VINYL RECORDER
+Record your records, look them up on Discogs, split them into tracks and save tagged FLAC/MP3 files.
+Windows 10 or 11, 64-bit.
+
+
+GETTING STARTED
+
+1. Unzip this folder somewhere it can stay, e.g. Documents\Vinyl Recorder
+   (not inside the zip, and not Downloads if you clean that out).
+
+2. Double-click "Vinyl Recorder.exe".
+   Windows may say "Windows protected your PC" because the app isn't from the Microsoft Store:
+   click "More info", then "Run anyway". It only asks the first time.
+
+3. It offers to add itself to the Start menu and desktop. Say Yes.
+
+4. Connect it to your Discogs account (free):
+   - On discogs.com go to Settings > Developers > "Generate new token"
+   - In Vinyl Recorder: File > Settings, paste the token, OK.
+   Your collection then appears on the Album tab.
+
+
+SETTING UP YOUR AUDIO
+
+On the Record tab:
+- Device: pick your audio interface. The "ASIO" entry is best if your interface has one
+  (Focusrite, Behringer, etc. - install the maker's driver first).
+- Left / Right input: the input numbers your turntable or mixer is plugged into
+  (e.g. 1 & 2, or 3 & 4 on a Scarlett 4i4).
+- Press Apply, play a record, and set your mixer so peaks reach about -6 dB
+  and the clip counter stays at 0.
+- If the device won't open, close other audio apps (DJ software, DAWs) and press Apply again.
+
+
+HOW IT WORKS
+
+1. Album:  pick the record from your collection (or search Discogs).
+2. Record: "Whole LP" records side A, the flip, and side B in one go. Press Stop at the end.
+3. Split & save: tracks are found automatically. Scroll to zoom, drag lines to adjust,
+   Space to play/stop. Choose FLAC and/or MP3, then Save.
+
+Music is saved to Music\Vinyl Rips (change it in File > Settings).
+Raw recordings are kept in Music\Vinyl Rips\_recordings - delete them when you're happy.
