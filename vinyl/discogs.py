@@ -10,10 +10,10 @@ from urllib.parse import quote
 
 import requests
 
-from . import __version__
+from . import HOMEPAGE, __version__
 
 API = "https://api.discogs.com"
-USER_AGENT = f"VinylRecorder/{__version__} +https://www.discogs.com/developers"
+USER_AGENT = f"VinylRecorder/{__version__} +{HOMEPAGE}"  # Discogs asks apps to identify themselves
 
 
 class DiscogsError(Exception):

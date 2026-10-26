@@ -97,12 +97,23 @@ def write_ico(path: Path, sizes: list[int]) -> None:
     path.write_bytes(header + entries + blobs)
 
 
+def write_icns(path: Path) -> None:
+    """macOS icon. Needs Pillow (pip install pillow), which picks the sizes from a 1024 px image."""
+    import io
+
+    from PIL import Image
+
+    big = Image.open(io.BytesIO(png_bytes(draw(1024))))
+    big.save(path, format="ICNS")
+
+
 def main():
     app = QGuiApplication(sys.argv)  # noqa: F841 (needed for QPainter on images)
     ASSETS.mkdir(exist_ok=True)
     draw(256).save(str(ASSETS / "icon.png"))
     write_ico(ASSETS / "icon.ico", ICO_SIZES)
-    print("wrote", ASSETS / "icon.png", "and", ASSETS / "icon.ico")
+    write_icns(ASSETS / "icon.icns")
+    print("wrote", ASSETS / "icon.png", "icon.ico and icon.icns")
 
 
 if __name__ == "__main__":

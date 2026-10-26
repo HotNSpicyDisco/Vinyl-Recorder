@@ -1,6 +1,7 @@
-"""Start menu / desktop shortcuts, the taskbar identity and where the app's own files live.
+"""Start menu / desktop shortcuts (Windows), the taskbar identity and where the app's own files live.
 
-Works both from source (pythonw run.py) and as the packaged Vinyl Recorder.exe.
+Works both from source (pythonw run.py) and as the packaged app. On macOS there are no
+shortcuts to make: the packaged app goes in Applications like any other.
 """
 
 import os
@@ -9,7 +10,8 @@ from pathlib import Path
 
 APP_ID = "HotNSpicyDisco.VinylRecorder"  # taskbar identity; shortcuts carry the same one
 NAME = "Vinyl Recorder.lnk"
-FROZEN = getattr(sys, "frozen", False)  # True inside the packaged .exe
+FROZEN = getattr(sys, "frozen", False)  # True inside the packaged app
+SUPPORTED = sys.platform == "win32"
 
 
 def resource_dir() -> Path:
@@ -80,4 +82,6 @@ def remove() -> list[Path]:
 
 
 def start_menu_shortcut_exists() -> bool:
+    if not SUPPORTED:
+        return False
     return (Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / NAME).exists()

@@ -1,89 +1,118 @@
 # Vinyl Recorder
 
-Record a record from your audio interface, look it up on Discogs, split each side into
-tracks and save tagged FLAC files with cover art.
+Record your records, look them up in your Discogs collection, split them into tracks and save
+tagged FLAC/MP3 files with cover art, BPM and length. No bells and whistles.
 
-Open **Vinyl Recorder** from the Start menu or the desktop shortcut. Right-click it →
-*Pin to taskbar* if you like.
+Windows 10/11 and macOS 11+.
 
-On a new PC, double-click `launch.bat` once: it installs everything and creates the shortcuts.
-To recreate or remove them later:
+![Your Discogs collection, with what you've already saved](docs/album.png)
+
+## Download
+
+Grab the zip for your computer from the **[Releases](../../releases)** page:
+
+| Computer | File |
+|---|---|
+| Windows 10 / 11 | `Vinyl-Recorder-windows.zip` |
+| Mac with Apple Silicon (M1 or later) | `Vinyl-Recorder-mac-apple-silicon.zip` |
+| Mac with an Intel chip | `Vinyl-Recorder-mac-intel.zip` |
+
+**Windows:** unzip it somewhere it can stay (e.g. Documents) and run `Vinyl Recorder.exe`.
+If Windows says *"Windows protected your PC"*, click **More info → Run anyway** (the app isn't
+signed with a paid Microsoft certificate). It then offers to add itself to the Start menu.
+
+**Mac:** unzip it and drag **Vinyl Recorder** into Applications. The first time, macOS will
+refuse to open it because it isn't from an identified developer. Open **System Settings → Privacy &
+Security**, scroll down and click **Open Anyway** (on older macOS: right-click the app → Open).
+When it asks to use the microphone, click **OK**. That's how it records your audio interface.
+
+## What it does
+
+1. **Album**: your Discogs collection as a list to work down. Already-saved records are
+   green, half-done ones orange, and **Next not saved ↓** jumps to the next one to rip.
+   Search Discogs for anything that isn't in your collection.
+2. **Record**: pick your audio interface and inputs, set levels with the meters and clip
+   counter, and record. **Whole LP** records side A, the flip and side B in one take. Double
+   LPs can be recorded a disc at a time.
+3. **Split & save**: tracks are found automatically using the Discogs track lengths. Each
+   track starts on its first beat and keeps its full fade-out, and needle drops, lead-in
+   rumble, crackle and run-out groove are left out. Zoom in with the scroll wheel to check, drag
+   lines to adjust, and press Space to play or stop. Save as FLAC, MP3 320 or both, tagged
+   with title, artists, album, year, label, catalogue number, cover art, length and BPM.
+
+![Splitting a whole LP: the grey parts are gaps and the record flip, which aren't saved](docs/split.png)
+
+### First run
+
+- **Discogs**: get a free personal access token at discogs.com → Settings → Developers →
+  *Generate new token*, and paste it into **File → Settings**. Your collection then loads.
+- **Audio**: on the Record tab pick your interface and the inputs your turntable or mixer is
+  plugged into. On Windows, the **ASIO** entry is best if your interface has one (install the
+  maker's driver). If it won't open, close other audio apps (DJ software, DAWs) and press **Apply**.
+- Set your mixer so the loudest parts peak around -6 dB and the clip counter stays at 0.
+- No RIAA EQ is applied: plug in a mixer or phono preamp, not a bare turntable.
+
+Music is saved to `Music/Vinyl Rips`. Raw recordings stay in `Music/Vinyl Rips/_recordings`
+until you delete them. If the app ever crashes mid-recording, the take can still be opened with
+**File → Open recording**.
+
+## Your data
+
+Settings, your Discogs token, the record of what you've ripped and the cached collection are
+stored only on your computer:
+
+- Windows: `%APPDATA%\VinylRecorder`
+- macOS: `~/Library/Application Support/VinylRecorder`
+
+The app only talks to Discogs (api.discogs.com and its image server).
+
+## Running from source
+
+Needs Python 3.11+.
+
+- **Windows:** double-click `launch.bat` (sets up on first run, creates Start menu shortcuts).
+- **macOS:** double-click `launch.command`, or run it in Terminal. macOS asks for microphone
+  access for Terminal the first time you record.
+
+To make the shortcuts again, or remove them, on Windows:
 
 ```
-& "$env:USERPROFILE\Downloads\vinyl-recorder\.venv\Scripts\python.exe" "$env:USERPROFILE\Downloads\vinyl-recorder\tools\install_shortcuts.py"
-& "$env:USERPROFILE\Downloads\vinyl-recorder\.venv\Scripts\python.exe" "$env:USERPROFILE\Downloads\vinyl-recorder\tools\install_shortcuts.py" --remove
+.venv\Scripts\python.exe tools\install_shortcuts.py
+.venv\Scripts\python.exe tools\install_shortcuts.py --remove
 ```
 
-(PowerShell, from any folder. Add `--no-desktop` to the first one to skip the desktop shortcut.)
+## Building the apps
 
-The icon is drawn by `tools\make_icon.py`. Edit it and re-run to change the icon.
+GitHub Actions ([.github/workflows/build.yml](.github/workflows/build.yml)) tests and builds
+all three downloads on every push to `main`. Pushing a version tag publishes them as a release:
 
-## Workflow
+```
+git tag v1.0.0
+git push origin v1.0.0
+```
 
-1. **Album**: **My collection** lists your Discogs collection (it loads once, then
-   *Refresh from Discogs* when you've added records). Arrow down the list to preview
-   each record, or press **Next not saved ↓**. Colour shows progress: green = every side
-   saved, orange = some sides recorded or saved. *Hide saved* shows only what's left.
-   After saving an album, **Next album →** takes you straight to the next one.
-   **Search Discogs** is still there for records that aren't in your collection. Pasting
-   a Discogs release URL works even without a token.
-2. **Record**: pick the device (use *Focusrite USB ASIO* to reach inputs 3 & 4), set the
-   left/right inputs and sample rate, set your mixer so peaks sit around -6 dB, then
-   record each side. Files are named `Artist - Album (Year) - Side A.wav`, and side
-   letters follow the album's sides. The clip counter counts every clipped moment per
-   channel. It resets when a take starts, and the clips are marked red on the waveform.
-   **Whole LP** (the default) records the entire record in one take: play side A, flip,
-   play side B without stopping. The flip pause is found automatically, marked as
-   "not a track" and left out of the saved files.
-3. **Split & save**: the gaps between tracks are found using the Discogs track lengths.
-   Each gap becomes its own grey "gap" part that isn't saved. A track ends on its last
-   sound (plus 0.15 s of decay) and the next starts on its first beat, measured from
-   the samples. Crackle in the gap is ignored. **Space** plays from the pink cursor and
-   stops again; double-clicking a track plays it from its exact start.
-   Scroll wheel zooms in (down to a quarter of a second across the screen, showing the
-   real samples). Drag empty space to move along, and *Zoom to selected track's start*
-   jumps straight to a split. Drag a line to move a split, double-click or
-   *Split at cursor* to add one. Right-click for more: remove a split, mark a part as
-   not a track, set the music start/end, play from there. Choose **FLAC**, **MP3 320 kbps** or **both**, then
-   save. Each track gets full tags, the cover, its length (`TLEN`/`LENGTH`, in ms) and
-   its detected **BPM** (`TBPM`/`BPM`). With both formats, MP3s go in `Album (Year) [MP3]`.
-
-### Why record WAV and save MP3?
-
-The take is always captured lossless, because splitting an MP3 means re-encoding it and
-leaves small gaps at track boundaries. MP3s are made once, from the clean WAV, at
-save time. 96 kHz recordings are converted to 48 kHz for MP3, since MP3 tops out at 48 kHz.
-
-### BPM
-
-BPM is detected from the middle 90 s of each track. As in Rekordbox, results fall in
-a range you choose in Settings (default 78–155, which suits disco, funk and house). Use
-88–175 for faster music, otherwise 174 BPM drum & bass shows up as 87.
-
-## Discogs token
-
-Searching needs a free personal access token: discogs.com → Settings → Developers →
-*Generate new token*. Paste it in **File → Settings** (or set the `DISCOGS_TOKEN`
-environment variable). It's stored in `%APPDATA%\VinylRecorder\settings.json`.
-
-## Notes
-
-- No RIAA EQ is applied. A DJ mixer's line output is already equalised.
-- Raw recordings stay in `<output folder>\_recordings` as 24-bit WAV until you delete them.
-- ASIO only lets one app use the interface at a time, so close VinylStudio, DAWs, etc.
-  first. Focusrite Control can stay open.
-
-## Sharing the app (standalone build)
-
-`packaging\build.bat` builds `dist\Vinyl Recorder\Vinyl Recorder.exe` (no Python needed) and zips
-it, with `Read me first.txt`, as `dist\Vinyl Recorder.zip`. Rebuild after changing the code.
-Settings, the Discogs token, rip history and recordings live in each person's own
-`%APPDATA%\VinylRecorder` and `Music` folders, so none of yours go into the zip.
-To check a build on another PC: `"Vinyl Recorder.exe" --self-test report.txt`.
+To build locally, run `packaging\build.bat` on Windows or `packaging/build_mac.sh` on a Mac.
+The result can be checked with `"Vinyl Recorder.exe" --self-test report.txt` (or
+`"Vinyl Recorder.app/Contents/MacOS/Vinyl Recorder" --self-test report.txt`).
 
 ## Development
 
 ```
-.venv\Scripts\python.exe -m pytest tests
-.venv\Scripts\python.exe tests\smoke_ui.py %TEMP%\vr-smoke
+python -m pytest tests                          # unit tests (no audio hardware needed)
+python tests/smoke_ui.py <out_dir>              # drives the real window offscreen, saves screenshots
+python tools/make_icon.py                       # redraws the icons (needs Pillow for the Mac one)
 ```
+
+| Module | What it does |
+|---|---|
+| `vinyl/audio.py` | recording, playback, level analysis (all PortAudio calls on one thread) |
+| `vinyl/splitter.py` | finds gaps, record flips, first beats and fade-outs |
+| `vinyl/tempo.py` | BPM detection |
+| `vinyl/discogs.py` | Discogs search, releases and collection |
+| `vinyl/export.py` | cutting tracks, FLAC/MP3 writing and tagging |
+| `vinyl/library.py` | the local rip log and collection cache |
+| `vinyl/ui/` | the window |
+
+## License
+
+MIT, see [LICENSE](LICENSE).

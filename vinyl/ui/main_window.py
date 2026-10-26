@@ -1,7 +1,9 @@
 """Main window: 1. Album  2. Record  3. Split & save."""
 
 import re
+import shutil
 import string
+import sys
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -26,13 +28,30 @@ ALL_SIDES = "ALL"  # a recording of the whole record in one take (flip in the mi
 
 
 def side_name(side: str) -> str:
-    return "Whole LP" if side == ALL_SIDES else f"Side {side}"
+    """'Whole LP', 'Sides C+D' (one disc of a double LP) or 'Side A'."""
+    if side == ALL_SIDES:
+        return "Whole LP"
+    return f"Sides {side}" if "+" in side else f"Side {side}"
+
+
+def take_sides(side: str, all_sides: list[str]) -> list[str]:
+    """The record sides a take covers."""
+    if side == ALL_SIDES:
+        return list(all_sides)
+    return side.split("+")
 
 
 def fill_side_combo(combo: QComboBox, sides: list[str], whole: bool) -> None:
+    """Take options: the whole record, each disc of a multi-disc record (sides A+B, C+D…), single sides."""
     combo.clear()
     if whole:
-        combo.addItem("Whole LP (all sides in one take)", ALL_SIDES)
+        label = ("Whole LP (all sides in one take)" if len(sides) <= 2
+                 else f"Whole record (all {len(sides)} sides in one take)")
+        combo.addItem(label, ALL_SIDES)
+    if len(sides) > 2:
+        for n, i in enumerate(range(0, len(sides) - 1, 2), 1):
+            pair = f"{sides[i]}+{sides[i + 1]}"
+            combo.addItem(f"Disc {n}: sides {pair} in one take", pair)
     for s in sides:
         combo.addItem(f"Side {s}", s)
 TAB_ALBUM, TAB_RECORD, TAB_SPLIT = range(3)
@@ -182,7 +201,8 @@ class MainWindow(QMainWindow):
 
         self._scanning = False
         self._scan_devices(rescan=False)  # connects to the saved input when the scan finishes
-        if shortcuts.FROZEN and not self.settings.offered_shortcuts and not shortcuts.start_menu_shortcut_exists():
+        if (shortcuts.SUPPORTED and shortcuts.FROZEN and not self.settings.offered_shortcuts
+                and not shortcuts.start_menu_shortcut_exists()):
             QTimer.singleShot(900, self._offer_shortcuts)
 
     # ---------- helpers ----------
@@ -212,9 +232,10 @@ class MainWindow(QMainWindow):
         act = QAction("Settings…", self)
         act.triggered.connect(self._open_settings)
         m.addAction(act)
-        act = QAction("Add to Start menu and desktop", self)
-        act.triggered.connect(lambda: self._add_shortcuts(quiet=False))
-        m.addAction(act)
+        if shortcuts.SUPPORTED:
+            act = QAction("Add to Start menu and desktop", self)
+            act.triggered.connect(lambda: self._add_shortcuts(quiet=False))
+            m.addAction(act)
         m.addSeparator()
         act = QAction("Quit", self)
         act.triggered.connect(self.close)
@@ -340,7 +361,7 @@ class MainWindow(QMainWindow):
         self.rec_btn.clicked.connect(self._toggle_record)
         h.addWidget(self.rec_btn)
         self.rec_time = QLabel("0:00.0")
-        self.rec_time.setStyleSheet("font-size: 24px; font-family: Consolas, monospace;")
+        self.rec_time.setStyleSheet("font-size: 24px; font-family: Consolas, Menlo, monospace;")
         h.addWidget(self.rec_time)
         h.addStretch()
         lay.addWidget(box)
@@ -467,19 +488,29 @@ class MainWindow(QMainWindow):
             self.input_state.setText("No input devices found")
             return
         left, right = self.left_spin.value(), self.right_spin.value()
-        rate = self.rate_combo.currentData()
-        try:
-            self.recorder.open(d, left - 1, right - 1, rate)
-        except Exception as e:
-            self.input_state.setText(f"<span style='color:#f85149'>Could not open {d.name}: {e}</span><br>"
-                                     "If another app (VinylStudio, Focusrite Control, a DAW) is using the "
+        wanted = self.rate_combo.currentData()
+        # Not every interface does 96 kHz: fall back to the common rates rather than failing.
+        error = None
+        for rate in dict.fromkeys([wanted, 48000, 44100]):
+            try:
+                self.recorder.open(d, left - 1, right - 1, rate)
+                break
+            except Exception as e:
+                error = error or e
+        else:
+            self.input_state.setText(f"<span style='color:#f85149'>Could not open {d.name}: {error}</span><br>"
+                                     "If another app (DJ software, a DAW, another recorder) is using the "
                                      "interface, close it and press Apply.")
             return
+        note = ""
+        if rate != wanted:
+            self.rate_combo.setCurrentIndex(self.rate_combo.findData(rate))
+            note = f" ({d.name} can't record at {wanted / 1000:g} kHz)"
         self.settings.device_name, self.settings.left_input, self.settings.right_input = d.name, left, right
         self.settings.sample_rate = rate
         self.settings.save()
         self.meter.reset()
-        self.input_state.setText(f"Listening to inputs {left} & {right} on {d.name} at {rate / 1000:g} kHz")
+        self.input_state.setText(f"Listening to inputs {left} & {right} on {d.name} at {rate / 1000:g} kHz{note}")
 
     def _toggle_record(self):
         if self.recorder.is_recording:
@@ -499,9 +530,10 @@ class MainWindow(QMainWindow):
                 if rec.clip_count:
                     self._status(f"{side_name(rec.side)} clipped {rec.clip_count} times. The clips are marked in "
                                  "red on the Split tab. Turn the mixer down and re-record if they're audible.", 0)
-                if rec.side != ALL_SIDES:
+                if rec.side != ALL_SIDES:  # move on to the next side / disc
                     nxt = self.side_combo.currentIndex() + 1
-                    if nxt < self.side_combo.count():
+                    if nxt < self.side_combo.count() and ("+" in rec.side) == ("+" in (
+                            self.side_combo.itemData(nxt) or "")):
                         self.side_combo.setCurrentIndex(nxt)
             return
         if not self.recorder.is_open:
@@ -517,6 +549,20 @@ class MainWindow(QMainWindow):
                 return
         side = self.side_combo.currentData()
         path = self._recording_path(side)
+        # A whole LP at 96 kHz / 24-bit is ~1.5 GB: make sure it fits before starting
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            free_gb = shutil.disk_usage(path.parent).free / 1e9
+        except OSError:
+            free_gb = None
+        need_gb = self.recorder.samplerate * 2 * 3 * 60 * 60 / 1e9  # an hour of 24-bit stereo
+        if free_gb is not None and free_gb < need_gb:
+            ans = QMessageBox.question(
+                self, "Low disk space",
+                f"Only {free_gb:.1f} GB free where recordings are saved ({path.parent}).\n"
+                f"An hour of recording at this quality needs about {need_gb:.1f} GB.\n\nRecord anyway?")
+            if ans != QMessageBox.StandardButton.Yes:
+                return
         try:
             self.recorder.start(path)
         except Exception as e:
@@ -530,9 +576,7 @@ class MainWindow(QMainWindow):
         self._status(f"Recording {side_name(side).lower()} to {path.name}.{tip}", 0)
 
     def _sides_of(self, rec: Recording) -> list[str]:
-        if rec.side == ALL_SIDES:
-            return self.release.sides if self.release else []
-        return [rec.side]
+        return take_sides(rec.side, self.release.sides if self.release else [])
 
     def _recording_path(self, side: str) -> Path:
         """'Artist - Album (Year) - Side A.wav' or '… - Whole LP.wav', numbered if it exists already."""
@@ -572,8 +616,10 @@ class MainWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(self, "Open recordings", str(self.settings.recordings_dir),
                                                 "Audio (*.wav *.flac *.aif *.aiff)")
         for f in files:
-            m = re.search(r"side ([A-Z])\b", Path(f).stem, re.IGNORECASE)
-            # Anything not named after a single side is treated as a whole-LP take.
+            stem = Path(f).stem
+            m = (re.search(r"sides ([A-Z]{1,2}(?:\+[A-Z]{1,2})+)\b", stem, re.IGNORECASE)
+                 or re.search(r"side ([A-Z]{1,2})\b", stem, re.IGNORECASE))
+            # Anything not named after a side or disc is treated as a whole-LP take.
             self._add_recording(Path(f), m.group(1).upper() if m else ALL_SIDES)
 
     def _add_recording(self, path: Path, side: str) -> Recording:
@@ -1044,7 +1090,7 @@ class MainWindow(QMainWindow):
 
     def _side_saved(self, rec: Recording) -> bool:
         e = self.riplog.entries.get(str(rec.release_id)) if rec.release_id else None
-        sides = e.get("sides", []) if rec.side == ALL_SIDES and e else [rec.side]
+        sides = take_sides(rec.side, e.get("sides", []) if e else [])
         return bool(e and sides and all(s in e.get("sides_saved", []) for s in sides))
 
     def _clear_recordings(self):
@@ -1219,7 +1265,8 @@ class MainWindow(QMainWindow):
     def _side_tracks(self, rec: Recording) -> list[discogs.Track]:
         if not self.release:
             return []
-        return list(self.release.tracks) if rec.side == ALL_SIDES else self.release.tracks_on(rec.side)
+        sides = self._sides_of(rec)
+        return [t for t in self.release.tracks if t.side in sides]
 
     def _rows(self, rec: Recording) -> list[tuple[int | None, tuple[float, float] | None, discogs.Track | None]]:
         """Pair the parts between splits with Discogs tracks, in order, skipping parts that aren't tracks.
@@ -1253,8 +1300,9 @@ class MainWindow(QMainWindow):
         if rec is None or rec.env is None:
             return
         gap = self.settings.min_gap_seconds
-        if rec.side == ALL_SIDES and self.release and len(self.release.sides) > 1:
-            per_side = [[t.duration for t in self.release.tracks_on(s)] for s in self.release.sides]
+        sides = self._sides_of(rec)
+        if self.release and len(sides) > 1:  # several sides in one take: find the flips too
+            per_side = [[t.duration for t in self.release.tracks_on(s)] for s in sides]
             result = splitter.split_sides(rec.env, per_side, min_gap=gap)
             edges, skips = result.edges, set(result.skips)
         else:

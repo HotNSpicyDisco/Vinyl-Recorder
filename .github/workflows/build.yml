@@ -1,0 +1,92 @@
+# Tests on every push; builds the Windows and macOS apps. Pushing a tag like v1.0.0
+# also publishes them as a GitHub Release, so friends can download from the Releases page.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to create releases
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: Vinyl-Recorder-windows.zip
+          - os: macos-14  # Apple Silicon (M1 and later)
+            artifact: Vinyl-Recorder-mac-apple-silicon.zip
+          - os: macos-15-intel  # Intel Macs
+            artifact: Vinyl-Recorder-mac-intel.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Test
+        run: python -m pytest -q tests
+
+      - name: Build app
+        run: python -m PyInstaller --noconfirm --distpath dist --workpath build packaging/vinyl_recorder.spec
+
+      - name: Self-test the built app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process "dist/Vinyl Recorder/Vinyl Recorder.exe" -ArgumentList "--self-test","selftest.txt" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Self-test the built app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          "dist/Vinyl Recorder.app/Contents/MacOS/Vinyl Recorder" --self-test selftest.txt || { cat selftest.txt; exit 1; }
+          cat selftest.txt
+
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "packaging/Read me first.txt" "dist/Vinyl Recorder/Read me first.txt"
+          Compress-Archive -Path "dist/Vinyl Recorder" -DestinationPath "${{ matrix.artifact }}"
+
+      - name: Zip (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p pkg && cp -R "dist/Vinyl Recorder.app" pkg/ && cp "packaging/Read me first.txt" pkg/
+          ditto -c -k --keepParent pkg "${{ matrix.artifact }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" artifacts/*.zip \
+            --repo "${{ github.repository }}" --title "Vinyl Recorder ${{ github.ref_name }}" \
+            --notes "Download the zip for your computer. See the README for first-run steps."

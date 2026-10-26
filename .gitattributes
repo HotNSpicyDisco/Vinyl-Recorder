@@ -1,0 +1,7 @@
+# Shell scripts must keep Unix line endings to run on macOS; batch files Windows ones
+*.sh      text eol=lf
+*.command text eol=lf
+*.bat     text eol=crlf
+*.ico     binary
+*.icns    binary
+*.png     binary

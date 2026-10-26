@@ -37,7 +37,7 @@ coll = [
     CollectionItem(104, "Sylvester", "Step II", "1978", "Fantasy", "F-9556", ["Vinyl", "LP"], "", "2024-04-01"),
     CollectionItem(105, "Sade", "Diamond Life", "1984", "Epic", "EPC 26044", ["CD", "Album"], "", "2024-05-01"),
 ]
-library.CollectionCache().save("hotnspicydisco", coll)
+library.CollectionCache().save("test-user", coll)
 log = library.RipLog()
 done_rel = Release(101, "Chic", "C'est Chic", "1978", [], [], "Atlantic", "SD 19209",
                    [Track("A1", "Chic Cheer", 200, "", 1), Track("B1", "Le Freak", 300, "", 2)], "", "")

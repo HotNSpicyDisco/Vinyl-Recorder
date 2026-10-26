@@ -1,14 +1,24 @@
-"""User settings, stored as JSON in %APPDATA%\\VinylRecorder\\settings.json."""
+"""User settings, stored as JSON in the per-user app data folder:
+
+Windows: %APPDATA%\\VinylRecorder   macOS: ~/Library/Application Support/VinylRecorder
+Linux:   ~/.config/VinylRecorder
+"""
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
 def _settings_dir() -> Path:
-    base = os.environ.get("APPDATA") or str(Path.home())
-    return Path(base) / "VinylRecorder"
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA") or Path.home())
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "VinylRecorder"
 
 
 SETTINGS_PATH = _settings_dir() / "settings.json"
@@ -19,17 +29,17 @@ class Settings:
     discogs_token: str = ""
     discogs_username: str = ""  # filled in from the token on first collection load
     output_dir: str = str(Path.home() / "Music" / "Vinyl Rips")
-    device_name: str = "Focusrite USB ASIO"
+    device_name: str = ""  # remembered after the first successful connection
     # 1-based input numbers as printed on the interface
-    left_input: int = 3
-    right_input: int = 4
-    sample_rate: int = 96000
+    left_input: int = 1
+    right_input: int = 2
+    sample_rate: int = 96000  # falls back to 48/44.1 kHz if the interface can't do it
     vinyl_only_search: bool = True
     min_gap_seconds: float = 0.8
     export_format: str = "flac"  # "flac", "mp3" or "both"
     detect_bpm: bool = True
     bpm_low: float = 78.0  # BPM results fall in [bpm_low, 2 * bpm_low)
-    offered_shortcuts: bool = False  # the packaged app asks once about Start menu/desktop shortcuts
+    offered_shortcuts: bool = False  # the packaged Windows app asks once about Start menu/desktop shortcuts
     extra: dict = field(default_factory=dict)
 
     @property
