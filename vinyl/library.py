@@ -4,12 +4,12 @@ Both live next to the settings in %APPDATA%\\VinylRecorder.
 """
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 
 from . import settings
-from .discogs import CollectionItem, Release
+from .discogs import CollectionItem, Release, Track
 
 SAVED, PARTIAL = "saved", "partial"
 
@@ -115,6 +115,41 @@ class CollectionCache:
         self.username, self.items = username, items
         self.updated = datetime.now().isoformat(timespec="minutes")
         _write(self.path, {"username": username, "updated": self.updated, "items": [asdict(i) for i in items]})
+
+
+class ReleaseEdits:
+    """Your corrections to Discogs tracklists (or records you entered yourself), kept per release so a
+    wrong or missing Discogs entry only needs fixing once."""
+
+    FIELDS = ("artist", "title", "year", "label", "catno")
+
+    def __init__(self, path: Path | None = None):
+        self.path = path or _dir() / "tracklist_edits.json"
+        self.entries: dict[str, dict] = _read(self.path, {})
+
+    def has(self, release_id: int) -> bool:
+        return str(release_id) in self.entries
+
+    def apply(self, release: Release) -> Release:
+        """The release with your saved corrections, if any (cover art and Discogs links are kept)."""
+        e = self.entries.get(str(release.id))
+        if not e:
+            return release
+        tracks = [Track(t["position"], t["title"], t.get("duration"), t.get("artist", ""), n)
+                  for n, t in enumerate(e["tracks"], 1)]
+        return replace(release, tracks=tracks, **{k: e[k] for k in self.FIELDS if k in e})
+
+    def save(self, release: Release) -> None:
+        e = {k: getattr(release, k) for k in self.FIELDS}
+        e["tracks"] = [{"position": t.position, "title": t.title, "duration": t.duration, "artist": t.artist}
+                       for t in release.tracks]
+        e["saved"] = datetime.now().isoformat(timespec="seconds")
+        self.entries[str(release.id)] = e
+        _write(self.path, self.entries)
+
+    def forget(self, release_id: int) -> None:
+        self.entries.pop(str(release_id), None)
+        _write(self.path, self.entries)
 
 
 def thumb_path(release_id: int) -> Path:

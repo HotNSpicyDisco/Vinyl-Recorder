@@ -422,8 +422,10 @@ class WaveformView(QWidget):
             p.drawLine(QPointF(x, 0), QPointF(x, h))
             if i < len(self.edges) - 1:
                 label = self.labels[i] if i < len(self.labels) else "?"
-                p.setPen(QColor("#f0f6fc"))
-                p.drawText(QPointF(x + 4, 16), label)
+                # Only where it fits: a narrow gap's label would run into the next track's
+                if self._t2x(self.edges[i + 1]) - x > p.fontMetrics().horizontalAdvance(label) + 8:
+                    p.setPen(QColor("#f0f6fc"))
+                    p.drawText(QPointF(x + 4, 16), label)
         # Cursor (hot pink) and playhead (yellow), each with a dark outline so they show on the blue waveform
         cx = self._t2x(self.cursor)
         if -2 <= cx <= w + 2:

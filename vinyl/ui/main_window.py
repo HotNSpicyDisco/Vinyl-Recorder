@@ -18,8 +18,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .. import audio, discogs, export, library, shortcuts, splitter, tempo
+from .. import audio, discogs, export, library, shortcuts, splitter, tempo, tracklist
 from ..settings import Settings
+from .tracklist_editor import TracklistEditor
 from .widgets import LevelMeter, WaveformView, fmt_time
 
 SAMPLE_RATES = [44100, 48000, 88200, 96000]
@@ -88,6 +89,8 @@ class Recording:
     clip_count: int | None = None  # None for files opened from disk (not counted)
     release_id: int | None = None  # album chosen when this side was recorded
     skips: set[int] = field(default_factory=set)  # parts between edges that aren't tracks (record flips)
+    side_order: list[str] | None = None  # order the sides were played in, if not A, B, ... (e.g. B first)
+    overrides: dict[float, int] = field(default_factory=dict)  # tracks picked by hand (see vinyl.tracklist)
 
     @property
     def label(self) -> str:
@@ -185,6 +188,7 @@ class MainWindow(QMainWindow):
         self.bpms: dict[int, float | None] = {}  # track number -> BPM found when saving
         self.riplog = library.RipLog()
         self.collection = library.CollectionCache()
+        self.edits = library.ReleaseEdits()
         self._release_cache: dict[int, discogs.Release] = {}
         self._preview_wanted: int | None = None
 
@@ -576,7 +580,11 @@ class MainWindow(QMainWindow):
         self._status(f"Recording {side_name(side).lower()} to {path.name}.{tip}", 0)
 
     def _sides_of(self, rec: Recording) -> list[str]:
-        return take_sides(rec.side, self.release.sides if self.release else [])
+        """The sides a take covers, in the order they were played."""
+        sides = take_sides(rec.side, self.release.sides if self.release else [])
+        if rec.side_order and sorted(rec.side_order) == sorted(sides):
+            return list(rec.side_order)
+        return sides
 
     def _recording_path(self, side: str) -> Path:
         """'Artist - Album (Year) - Side A.wav' or '… - Whole LP.wav', numbered if it exists already."""
@@ -682,6 +690,10 @@ class MainWindow(QMainWindow):
         self.results.setIconSize(QPixmap(64, 64).size())
         self.results.currentItemChanged.connect(self._result_selected)
         sv.addWidget(self.results, 1)
+        b = QPushButton("Not on Discogs? Enter it yourself…")
+        b.setToolTip("For white labels and anything else Discogs doesn't have: type in the tracklist")
+        b.clicked.connect(lambda: self._edit_tracklist(None))
+        sv.addWidget(b)
         self.album_source.addTab(search, "Search Discogs")
         split.addWidget(self.album_source)
 
@@ -708,11 +720,19 @@ class MainWindow(QMainWindow):
         rv.addWidget(self.preview_tracks, 1)
         self.preview_status = QLabel()
         rv.addWidget(self.preview_status)
+        row = QHBoxLayout()
+        self.edit_preview_btn = QPushButton("Edit tracklist…")
+        self.edit_preview_btn.setToolTip("Discogs wrong? Fix positions, titles or tracks. Saved for this record.")
+        self.edit_preview_btn.setEnabled(False)
+        self.edit_preview_btn.setMinimumHeight(36)
+        self.edit_preview_btn.clicked.connect(lambda: self._edit_tracklist(self.preview))
+        row.addWidget(self.edit_preview_btn)
         self.use_btn = QPushButton("Use this album and start recording →")
         self.use_btn.setEnabled(False)
         self.use_btn.setMinimumHeight(36)
         self.use_btn.clicked.connect(self._use_release)
-        rv.addWidget(self.use_btn)
+        row.addWidget(self.use_btn, 1)
+        rv.addLayout(row)
         split.addWidget(right)
         split.setSizes([520, 680])
         lay.addWidget(split, 1)
@@ -1038,10 +1058,62 @@ class MainWindow(QMainWindow):
         self.run_bg(fetch, done)
 
     def _preview_loaded(self, rel: discogs.Release):
-        self.preview = rel
-        self._show_preview(rel)
+        self.preview = self.edits.apply(rel)  # your saved corrections, if any
+        self._show_preview(self.preview)
         self.preview_status.setText(self.riplog.describe(rel.id))
         self.use_btn.setEnabled(True)
+        self.edit_preview_btn.setEnabled(True)
+
+    def _edit_tracklist(self, rel: discogs.Release | None):
+        """Fix a record's tracklist (or, with rel None, enter one that isn't on Discogs)."""
+        original = self._release_cache.get(rel.id) if rel else None  # as Discogs has it
+        dlg = TracklistEditor(rel, original, self)
+        if not dlg.exec():
+            return
+        new = dlg.result_release()
+        if original is not None and self._same_tracklist(new, original) and (
+                new.artist, new.title, new.year, new.label, new.catno) == (
+                original.artist, original.title, original.year, original.label, original.catno):
+            self.edits.forget(new.id)  # back to exactly the Discogs version
+        else:
+            self.edits.save(new)
+        if rel is None:  # a new record typed in by hand: go straight to recording it
+            self.preview = new
+            self._show_preview(new)
+            self.use_btn.setEnabled(True)
+            self._use_release()
+            return
+        if self.preview and self.preview.id == new.id:
+            self.preview = new
+            self._show_preview(new)
+        if self.release and self.release.id == new.id:
+            self._release_changed(new)
+
+    @staticmethod
+    def _same_tracklist(a: discogs.Release, b: discogs.Release) -> bool:
+        key = lambda r: [(t.position, t.title, t.artist, t.duration) for t in r.tracks]  # noqa: E731
+        return key(a) == key(b)
+
+    def _release_changed(self, new: discogs.Release):
+        """The album being ripped was edited. If its sides or track lengths changed, the splits are
+        found again (track picks are track numbers, so they're forgotten too)."""
+        old = self.release
+        self.release = new
+        structure = lambda r: [(t.position, t.duration) for t in r.tracks]  # noqa: E731
+        changed = structure(old) != structure(new)
+        self.album_label.setText(f"<b>{new.artist} – {new.title}</b> ({new.year})")
+        self._update_record_album()
+        for rec in self.recordings:
+            if changed:
+                rec.overrides.clear()
+                rec.edges, rec.skips = [], set()
+                if rec.side_order and sorted(rec.side_order) != sorted(take_sides(rec.side, new.sides)):
+                    rec.side_order = None
+            if rec.side not in (ALL_SIDES, *new.sides) and "+" not in rec.side:
+                rec.side = ALL_SIDES  # that side no longer exists
+        self._refresh_split_choices()
+        if changed:
+            self._status("Tracklist changed: tracks found again using the corrected tracklist.", 8000)
 
     def _show_preview(self, rel: discogs.Release):
         if rel.cover:
@@ -1055,8 +1127,9 @@ class MainWindow(QMainWindow):
         self.release_info.setText(
             f"<h2>{rel.artist} – {rel.title}</h2>"
             f"<p>{rel.year} · {rel.label} {rel.catno}<br>{genres}</p>"
-            f"<p>Sides: {', '.join(rel.sides)} · {len(rel.tracks)} tracks</p>"
-            f"<p><a href='{rel.url}'>Open on Discogs</a></p>")
+            f"<p>Sides: {', '.join(rel.sides)} · {len(rel.tracks)} tracks"
+            + (" · <b>your corrected tracklist</b>" if self.edits.has(rel.id) else "") + "</p>"
+            + (f"<p><a href='{rel.url}'>Open on Discogs</a></p>" if rel.url else ""))
         self.preview_tracks.setRowCount(len(rel.tracks))
         for i, t in enumerate(rel.tracks):
             title = f"{t.artist} – {t.title}" if t.artist else t.title
@@ -1118,8 +1191,22 @@ class MainWindow(QMainWindow):
         self.split_side_combo.setMinimumWidth(200)
         self.split_side_combo.currentIndexChanged.connect(self._split_side_changed)
         row.addWidget(self.split_side_combo)
+        self.order_label = QLabel("played:")
+        row.addWidget(self.order_label)
+        self.order_combo = QComboBox()
+        self.order_combo.setToolTip("The order you played the sides in. Changing it finds the tracks again.")
+        self.order_combo.currentIndexChanged.connect(self._side_order_changed)
+        row.addWidget(self.order_combo)
         b = QPushButton("Find tracks again")
         b.clicked.connect(lambda: self._detect(self.current))
+        row.addWidget(b)
+        self.reset_tracks_btn = QPushButton("Undo track picks")
+        self.reset_tracks_btn.setToolTip("Forget the tracks you picked in the table and go back to Discogs order")
+        self.reset_tracks_btn.clicked.connect(self._reset_track_picks)
+        row.addWidget(self.reset_tracks_btn)
+        b = QPushButton("Edit tracklist…")
+        b.setToolTip("Discogs wrong? Fix positions, titles or tracks. Saved for this record.")
+        b.clicked.connect(lambda: self.release and self._edit_tracklist(self.release))
         row.addWidget(b)
         lay.addLayout(row)
 
@@ -1251,6 +1338,7 @@ class MainWindow(QMainWindow):
         if j >= 0:
             self.split_side_combo.setCurrentIndex(j)
         self.split_side_combo.blockSignals(False)
+        self._fill_order_combo(rec)
         self._show_recording(rec)
 
     def _split_side_changed(self):
@@ -1258,32 +1346,69 @@ class MainWindow(QMainWindow):
         if rec is None:
             return
         rec.side = self.split_side_combo.currentData()
-        rec.edges, rec.skips = [], set()
+        rec.edges, rec.skips, rec.side_order = [], set(), None
+        rec.overrides.clear()
         self._refresh_rec_labels(rec)
+        self._fill_order_combo(rec)
         self._show_recording(rec)
 
+    def _fill_order_combo(self, rec: Recording):
+        """Side order choices for a take with several sides: as on Discogs, or played backwards."""
+        sides = take_sides(rec.side, self.release.sides if self.release else [])
+        self.order_combo.blockSignals(True)
+        self.order_combo.clear()
+        if len(sides) > 1:
+            for order in (sides, sides[::-1]):
+                self.order_combo.addItem(" → ".join(order), order)
+            self.order_combo.setCurrentIndex(1 if rec.side_order == sides[::-1] else 0)
+        self.order_combo.blockSignals(False)
+        for w in (self.order_label, self.order_combo):
+            w.setVisible(len(sides) > 1)
+
+    def _side_order_changed(self):
+        rec = self.current
+        if rec is None or self.order_combo.currentData() is None:
+            return
+        order = self.order_combo.currentData()
+        rec.side_order = None if order == take_sides(rec.side, self.release.sides if self.release else []) else order
+        rec.overrides.clear()
+        self._detect(rec)  # side lengths decide where the flip is, so find everything again
+
+    def _reset_track_picks(self):
+        if self.current:
+            self.current.overrides.clear()
+            self._update_split_view()
+
     def _side_tracks(self, rec: Recording) -> list[discogs.Track]:
+        """The take's tracks in the order they were played."""
         if not self.release:
             return []
-        sides = self._sides_of(rec)
-        return [t for t in self.release.tracks if t.side in sides]
+        return tracklist.sequence(self.release.tracks, self._sides_of(rec))
 
-    def _rows(self, rec: Recording) -> list[tuple[int | None, tuple[float, float] | None, discogs.Track | None]]:
-        """Pair the parts between splits with Discogs tracks, in order, skipping parts that aren't tracks.
+    def _rows(self, rec: Recording) -> list[tracklist.Row]:
+        """Pair the parts between splits with tracks: in playing order, except where you picked one.
 
-        Returns (part index, (start, end), track) rows; part or track is None where the counts don't match.
+        Returns (part index, (start, end), track) rows; part or track is None where they don't match up.
         """
-        tracks = self._side_tracks(rec)
-        segs = list(zip(rec.edges[:-1], rec.edges[1:]))
-        rows, ti = [], 0
-        for i, s in enumerate(segs):
-            if i in rec.skips:
-                rows.append((i, s, None))
-                continue
-            rows.append((i, s, tracks[ti] if ti < len(tracks) else None))
-            ti += 1
-        rows += [(None, None, t) for t in tracks[ti:]]
-        return rows
+        all_tracks = self.release.tracks if self.release else []
+        return tracklist.assign(rec.edges, rec.skips, self._side_tracks(rec), all_tracks, rec.overrides)
+
+    def _pick_track(self, part: int, choice):
+        """A track was chosen in the table for this part (or 'not a track')."""
+        rec = self.current
+        if rec is None:
+            return
+        if choice == "skip":
+            tracklist.set_override(rec.overrides, rec.edges, part, None)
+            if part not in rec.skips:
+                self.wave.toggle_skip(part)  # updates rec.skips and the view
+            return
+        if part in rec.skips:
+            rec.skips.discard(part)
+            self.wave.skips.discard(part)
+        tracklist.set_override(rec.overrides, rec.edges, part, choice)
+        self._update_split_view(update_wave=False)
+        self.wave.update()
 
     def _show_recording(self, rec: Recording):
         if rec.env is None:
@@ -1360,7 +1485,9 @@ class MainWindow(QMainWindow):
                 elif t is None or s is None:
                     item.setForeground(Qt.GlobalColor.red)
                 self.track_table.setItem(r, col, item)
+            self.track_table.setCellWidget(r, 1, self._track_picker(part, t, skipped, cells[1]))
         self.track_table.resizeColumnToContents(0)
+        self.reset_tracks_btn.setEnabled(bool(rec.overrides))
         tracks = self._side_tracks(rec)
         pieces = n_parts - len(rec.skips)
         if tracks and pieces != len(tracks):
@@ -1368,6 +1495,33 @@ class MainWindow(QMainWindow):
                          "Add or remove splits.", 0)
         else:
             self._status("")
+
+    def _track_picker(self, part: int | None, track: discogs.Track | None, skipped: bool, text: str) -> QWidget | None:
+        """Dropdown in the Title cell to say which track a part really is (or that it isn't one)."""
+        if part is None or not self.release:
+            return None  # a Discogs track no part was matched to: nothing to pick
+        combo = QComboBox()
+        combo.setFrame(False)
+        combo.setToolTip("Pick the track this part really is. The parts after it follow on in order.")
+        if skipped:
+            combo.addItem(f"— {text}", "skip")
+        elif track is None:
+            combo.addItem("? (pick the track)", None)
+        for t in self.release.tracks:
+            name = f"{t.artist} – {t.title}" if t.artist else t.title
+            combo.addItem(f"{t.position}   {name}", t.number)
+        if not skipped:
+            combo.addItem("— Not a track (gap, silence…)", "skip")
+        combo.setCurrentIndex(max(0, combo.findData(track.number)) if track else 0)
+
+        def picked(i):
+            choice = combo.itemData(i)
+            if choice is not None:
+                # Rebuilding the table replaces this dropdown, so do it after Qt is done with the signal
+                QTimer.singleShot(0, lambda: self._pick_track(part, choice))
+
+        combo.currentIndexChanged.connect(picked)
+        return combo
 
     @staticmethod
     def _skip_kind(seg: tuple[float, float]) -> tuple[str, str]:
@@ -1458,6 +1612,16 @@ class MainWindow(QMainWindow):
             cuts = [export.TrackCut(t, s[0], s[1]) for part, s, t in self._rows(rec)
                     if t is not None and s is not None and part not in rec.skips]
             jobs.append((rec, cuts))
+        # The same track picked for two parts would save one file over the other
+        counts: dict[str, int] = {}
+        for _, cuts in jobs:
+            for c in cuts:
+                counts[c.track.position] = counts.get(c.track.position, 0) + 1
+        dupes = [p for p, n in counts.items() if n > 1]
+        if dupes:
+            self._error(f"{', '.join(dupes)} is picked for more than one part. Pick a different track for one of "
+                        "them (Title column), or use Undo track picks.")
+            return
         if not jobs:
             self._error("Nothing to save.\n\n" + "\n".join(problems))
             return

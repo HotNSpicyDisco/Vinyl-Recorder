@@ -140,7 +140,8 @@ def tag_flac(path: Path, track: Track, release: Release, info: SavedTrack) -> No
         f["BPM"] = bpm
     f["LENGTH"] = str(int(round(info.length * 1000)))  # milliseconds, same as ID3 TLEN
     f["VINYL_POSITION"] = track.position
-    f["DISCOGS_RELEASE_ID"] = str(release.id)
+    if release.id > 0:  # records typed in by hand have no Discogs entry
+        f["DISCOGS_RELEASE_ID"] = str(release.id)
     if release.cover:
         pic = Picture()
         pic.type = 3  # front cover
@@ -171,7 +172,8 @@ def tag_mp3(path: Path, track: Track, release: Release, info: SavedTrack) -> Non
         tags.add(TBPM(encoding=3, text=bpm))
     tags.add(TLEN(encoding=3, text=str(int(round(info.length * 1000)))))
     for desc, value in (("CATALOGNUMBER", release.catno), ("STYLE", "; ".join(release.styles)),
-                        ("VINYL_POSITION", track.position), ("DISCOGS_RELEASE_ID", str(release.id))):
+                        ("VINYL_POSITION", track.position),
+                        ("DISCOGS_RELEASE_ID", str(release.id) if release.id > 0 else "")):
         if value:
             tags.add(TXXX(encoding=3, desc=desc, text=value))
     if release.cover:

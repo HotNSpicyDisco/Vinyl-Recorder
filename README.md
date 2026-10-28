@@ -42,6 +42,18 @@ When it asks to use the microphone, click **OK**. That's how it records your aud
 
 ![Splitting a whole LP: the grey parts are gaps and the record flip, which aren't saved](docs/split.png)
 
+### When the record doesn't match Discogs
+
+- **Played side B first?** Set **played: B → A** next to the recording on the Split & save tab.
+- **A part got the wrong track?** Pick the right one from the dropdown in its **Title** cell. The
+  parts after it follow on in order, wrapping round to the tracks not used yet. **Undo track picks**
+  puts everything back.
+- **Discogs is wrong** (e.g. it lists A / B1 / B2 but the record is A1 / A2 / B1)? Click **Edit
+  tracklist…** and fix positions, titles, artists and lengths, or add and remove tracks. The tracks
+  are then found again using your version, and it's remembered for that record.
+- **Not on Discogs at all** (white labels, promos)? **Search Discogs → Not on Discogs? Enter it
+  yourself…**
+
 ### First run
 
 - **Discogs**: get a free personal access token at discogs.com → Settings → Developers →

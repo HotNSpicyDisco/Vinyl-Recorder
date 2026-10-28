@@ -80,6 +80,26 @@ def test_riplog_statuses(tmp_path: Path):
     assert library.RipLog(tmp_path / "rip_log.json").status(rel.id) is None
 
 
+def test_tracklist_corrections_are_kept(tmp_path: Path):
+    """Discogs says A / B1 / B2 but the record really is A1 / A2 / B1: fix it once, it stays fixed."""
+    from dataclasses import replace
+
+    discogs_version = Release(42, "DJ X", "Promo", "1992", [], [], "Lbl", "L1",
+                              [Track("A", "First", 400, "", 1), Track("B1", "Second", 300, "", 2),
+                               Track("B2", "Third", 280, "", 3)], "", "", cover=b"jpg")
+    fixed = replace(discogs_version, tracks=[Track("A1", "First", 400, "", 1), Track("A2", "Second", 300, "", 2),
+                                             Track("B1", "Third", 280, "", 3)])
+    edits = library.ReleaseEdits(tmp_path / "edits.json")
+    assert edits.apply(discogs_version) is discogs_version  # nothing saved yet
+    edits.save(fixed)
+    again = library.ReleaseEdits(tmp_path / "edits.json").apply(discogs_version)  # e.g. next time it's opened
+    assert [t.position for t in again.tracks] == ["A1", "A2", "B1"]
+    assert again.sides == ["A", "B"] and [t.title for t in again.tracks_on("A")] == ["First", "Second"]
+    assert again.cover == b"jpg" and again.id == 42
+    edits.forget(42)
+    assert library.ReleaseEdits(tmp_path / "edits.json").apply(discogs_version) is discogs_version
+
+
 def test_collection_cache_roundtrip(tmp_path: Path):
     cache = library.CollectionCache(tmp_path / "c.json")
     assert cache.items == []

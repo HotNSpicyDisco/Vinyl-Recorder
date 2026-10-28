@@ -22,7 +22,7 @@ vs.SETTINGS_PATH = out / "settings.json"  # settings, rip log and collection cac
 
 import numpy as np
 import soundfile as sf
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from test_tempo import SR, drum_loop
 from vinyl import discogs, library
@@ -199,5 +199,92 @@ assert pump(30, lambda: win.save_btn.isEnabled() and dialog), "save never finish
 lp_files = sorted(p.name for p in (out / "music" / "Sylvester").rglob("*.flac"))
 print("whole LP saved:", lp_files)
 print("rip log:", win.riplog.describe(104))
+# ---- A white label recorded B side first: side B (2 tracks), flip, side A (3 tracks) ----
+win.preview = Release(106, "Unknown Artist", "White Label", "1995", [], [], "", "",
+                      [Track("A1", "Alpha", 31, "", 1), Track("A2", "Beta", 21, "", 2), Track("A3", "Gamma", 26, "", 3),
+                       Track("B1", "Delta", 36, "", 4), Track("B2", "Epsilon", 23, "", 5)], "", "")
+win._use_release()
+wl = out / win._recording_path(ALL_SIDES).name
+make_whole_lp(wl, [35, 22], [30, 20, 25])  # played B first
+rec = win._add_recording(wl, ALL_SIDES)
+assert pump(10, lambda: rec.env is not None)
+win.tabs.setCurrentIndex(TAB_SPLIT)
+pump(0.3)
+
+
+def table():
+    return [(win.track_table.item(r, 0).text(), win.track_table.item(r, 2).text())
+            for r in range(win.track_table.rowCount()) if win.track_table.item(r, 0).text() != "—"]
+
+
+print("B-first take, default A → B:", table())
+win.order_combo.setCurrentIndex(1)  # B → A
+pump(0.3)
+print("after choosing", repr(win.order_combo.currentText()) + ":", table())
+win.grab().save(str(out / "7_b_first.png"))
+
+# Pick a track by hand in the table: say the first part is really A3; the next parts follow on from it
+win._pick_track(0, 3)
+pump(0.2)
+print("first part picked as A3:", table(), "| undo enabled:", win.reset_tracks_btn.isEnabled())
+win._reset_track_picks()
+pump(0.2)
+print("after undo:", table())
+
+# ---- Discogs is wrong: it says A / B1 / B2, the record really is A1 A2 | B1 ----
+import vinyl.ui.main_window as mw
+from vinyl.ui.tracklist_editor import TracklistEditor
+
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)  # "switch album?" etc.
+wrong = Release(107, "DJ Promo", "Test Pressing", "1992", [], [], "Lbl", "P1",
+                [Track("A", "First", 30, "", 1), Track("B1", "Second", 20, "", 2), Track("B2", "Third", 35, "", 3)],
+                "", "https://www.discogs.com/release/107")
+win._release_cache[107] = wrong
+win.preview = wrong
+win._use_release()
+tp = out / win._recording_path(ALL_SIDES).name
+make_whole_lp(tp, [30, 20], [35])  # really: A1 A2, flip, B1
+rec = win._add_recording(tp, ALL_SIDES)
+assert pump(10, lambda: rec.env is not None)
+win.tabs.setCurrentIndex(TAB_SPLIT)
+pump(0.3)
+print("Discogs tracklist (wrong):", table())
+
+# The real editor dialog: retype the positions as they really are
+dlg = TracklistEditor(win.release, wrong, win)
+for r, pos in enumerate(["A1", "A2", "B1"]):
+    dlg.table.item(r, 0).setText(pos)
+dlg.show()
+pump(0.2)
+dlg.grab().save(str(out / "8_editor.png"))
+dlg.accept()
+fixed = dlg.result_release()
+
+
+class FakeEditor:  # stands in for the dialog so the window's own handling runs
+    def __init__(self, rel, original, parent):
+        self.rel = rel
+
+    def exec(self):
+        return True
+
+    def result_release(self):
+        return fixed if self.rel else mw_new
+
+
+mw.TracklistEditor = FakeEditor
+win._edit_tracklist(win.release)
+pump(0.3)
+print("after fixing positions:", table(), "| sides:", win.release.sides,
+      "| saved correction:", win.edits.has(107))
+win.grab().save(str(out / "9_fixed.png"))
+
+# A white label that isn't on Discogs at all
+mw_new = Release(-1, "Unknown", "White Label", "", [], [], "", "",
+                 [Track("A", "Side A Track", None, "", 1), Track("B", "Side B Track", None, "", 2)], "", "")
+win._edit_tracklist(None)
+pump(0.3)
+print("entered by hand:", win.release.title, "| on tab:", win.tabs.currentIndex() == TAB_RECORD,
+      "| record options:", [win.side_combo.itemText(i) for i in range(win.side_combo.count())])
 win.recorder.close()
 win.close()
