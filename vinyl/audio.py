@@ -5,6 +5,7 @@ import os
 # Must be set before sounddevice is imported, or PortAudio loads without ASIO support.
 os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
+import collections
 import functools
 import queue
 import threading
@@ -88,19 +89,41 @@ def rescan_input_devices() -> list[InputDevice]:
 CLIP_LEVEL = 0.999  # a sample this close to full scale counts as clipped
 MAX_CLIP_TIMES = 5000
 
+# Hands-free recording
+ARMED, RECORDING, PAUSED, FINISHED = "armed", "recording", "paused", "finished"
+LEVEL_BLOCK = 0.1  # seconds per level reading
+SOUND_DB = -45.0  # a needle drop or music: louder than this (rumble filtered out)...
+SOUND_BLOCKS = (3, 5)  # ...in 3 of the last 5 readings (run-out clicks are too short to count)
+PREROLL = 2.0  # seconds kept from just before the sound started
+RUNOUT_SECONDS = 6.0  # this long without music ends a side (gaps between tracks are shorter)
+QUIET_BELOW_MUSIC_DB = 35.0  # "without music": this far below the loudest second so far...
+QUIET_MAX_DB = -40.0  # ...and never louder than this
+
 
 class Recorder:
     """Keeps an input stream open for level metering; writes to disk while recording.
 
     Clips are counted per channel as events (a run of clipped samples counts once).
     While recording, the time of each clip is kept so it can be marked on the waveform.
+
+    Hands-free mode (start(..., hands_free=True)): the take waits for the needle drop and
+    begins with the PREROLL seconds before it; when a side runs into its run-out groove it
+    pauses, notes the side break, and re-arms for the next side (so the flip isn't recorded);
+    after the last side it finishes on its own. `state` and `event` tell the UI what happened.
     """
 
     def __init__(self):
         self.clip_counts = [0, 0]
         self.clip_times: list[float] = []
         self._prev_clipped = np.zeros(2, dtype=bool)
-        self._rec_frames = 0
+        self._rec_frames = 0  # frames sent to the file so far
+        self._writing = False
+        self.hands_free = False
+        self.state = RECORDING
+        self.event: str | None = None  # "finished" when hands-free mode recorded the last side
+        self.sides_target: int | None = None
+        self.sides_done = 0
+        self.side_breaks: list[float] = []  # seconds into the file where a side ended
         self.stream = None  # sounddevice.InputStream while the input is open
         self.samplerate = 0
         self._select: list[int] | None = None
@@ -146,7 +169,21 @@ class Recorder:
         )
         self.samplerate = samplerate
         self.overflows = 0
+        self._prepare_detection(samplerate)
         self.stream.start()
+
+    def _prepare_detection(self, samplerate: int) -> None:
+        """Level tracking for hands-free mode: rumble-filtered readings every LEVEL_BLOCK, and a
+        ring buffer of the last PREROLL seconds so a take can start just before the sound."""
+        self._sos = rumble_filter(samplerate)
+        self._zi = np.zeros((self._sos.shape[0], 2))  # filter state carried between callbacks
+        self._acc, self._acc_n = 0.0, 0
+        self._block_n = int(samplerate * LEVEL_BLOCK)
+        self._levels: collections.deque = collections.deque(maxlen=int(RUNOUT_SECONDS / LEVEL_BLOCK))
+        self._recent: collections.deque = collections.deque(maxlen=SOUND_BLOCKS[1])
+        self._music_db = -np.inf  # loudest one-second level since the take started
+        self._ring = np.zeros((int(samplerate * PREROLL), 2), dtype=np.float32)
+        self._ring_pos, self._ring_full = 0, False
 
     @on_audio_thread
     def close(self) -> None:
@@ -169,9 +206,80 @@ class Recorder:
             self._count_clips(mag >= CLIP_LEVEL)
         else:
             self._prev_clipped[:] = False
-        if self._recording:
+        if not self._recording:
+            return
+        if self.hands_free:
+            self._push_ring(data)
+            if self._track_levels(data):  # the sound started this block: the ring already holds it
+                preroll = self._ring_contents()
+                self._queue.put(preroll)
+                self._rec_frames += len(preroll)
+                return
+        if self._writing:
             self._queue.put(data.copy())
             self._rec_frames += frames
+
+    # --- hands-free mode (runs on PortAudio's callback thread, so it stays cheap) ---
+
+    def _push_ring(self, data: np.ndarray) -> None:
+        n, size = len(data), len(self._ring)
+        if n >= size:
+            self._ring[:] = data[-size:]
+            self._ring_pos, self._ring_full = 0, True
+            return
+        end = self._ring_pos + n
+        if end <= size:
+            self._ring[self._ring_pos:end] = data
+        else:
+            first = size - self._ring_pos
+            self._ring[self._ring_pos:] = data[:first]
+            self._ring[:n - first] = data[first:]
+        self._ring_full = self._ring_full or end >= size
+        self._ring_pos = end % size
+
+    def _ring_contents(self) -> np.ndarray:
+        if not self._ring_full:
+            return self._ring[:self._ring_pos].copy()
+        return np.concatenate([self._ring[self._ring_pos:], self._ring[:self._ring_pos]])
+
+    def _track_levels(self, data: np.ndarray) -> bool:
+        """Update the state machine. Returns True if writing (re)started on this block."""
+        hp, self._zi = sosfilt(self._sos, data.mean(axis=1), zi=self._zi)
+        self._acc += float(np.sum(hp ** 2))
+        self._acc_n += len(hp)
+        started = False
+        while self._acc_n >= self._block_n:
+            db = 10 * np.log10(self._acc / self._acc_n + 1e-14)
+            self._acc, self._acc_n = 0.0, 0
+            started |= self._on_level(db)
+        return started
+
+    def _on_level(self, db: float) -> bool:
+        self._levels.append(db)
+        self._recent.append(db)
+        if self.state in (ARMED, PAUSED):
+            if sum(d > SOUND_DB for d in self._recent) >= SOUND_BLOCKS[0]:
+                self.state, self._writing = RECORDING, True
+                self._levels.clear()  # a fresh RUNOUT_SECONDS before this side can end
+                return True
+            return False
+        if self.state == RECORDING:
+            last_second = list(self._levels)[-int(1 / LEVEL_BLOCK):]
+            power = np.mean(10 ** (np.array(last_second) / 10))
+            self._music_db = max(self._music_db, 10 * np.log10(power + 1e-14))
+            quiet = min(QUIET_MAX_DB, self._music_db - QUIET_BELOW_MUSIC_DB)
+            levels = np.array(self._levels)
+            # Median, so the once-per-turn click of a run-out groove doesn't keep the side going
+            if len(levels) == self._levels.maxlen and np.median(levels) < quiet and np.mean(levels > quiet) < 0.2:
+                self._writing = False
+                self.side_breaks.append(self._rec_frames / self.samplerate)
+                self.sides_done += 1
+                self._recent.clear()
+                if self.sides_target and self.sides_done >= self.sides_target:
+                    self.state, self.event = FINISHED, "finished"
+                else:
+                    self.state = PAUSED
+        return False
 
     def _count_clips(self, clipped: np.ndarray) -> None:
         for ch in range(2):
@@ -181,7 +289,7 @@ class Recorder:
             if not n:
                 continue
             self.clip_counts[ch] += n
-            if self._recording and len(self.clip_times) < MAX_CLIP_TIMES:
+            if self._writing and len(self.clip_times) < MAX_CLIP_TIMES:
                 frames = self._rec_frames + np.flatnonzero(starts)
                 self.clip_times.extend((frames / self.samplerate).tolist())
         self._prev_clipped[:] = clipped[-1]
@@ -197,7 +305,9 @@ class Recorder:
             self._peak[:] = 0
         return peaks
 
-    def start(self, path: Path) -> None:
+    def start(self, path: Path, hands_free: bool = False, sides: int | None = None) -> None:
+        """Start a take. hands_free: wait for the needle, pause between sides, and finish after
+        `sides` sides (None: keep going until stopped)."""
         if not self.is_open:
             raise RuntimeError("Input is not open")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,6 +316,12 @@ class Recorder:
         self.frames_written = 0
         self._rec_frames = 0
         self.reset_clips()
+        self.hands_free, self.sides_target, self.sides_done = hands_free, sides, 0
+        self.side_breaks, self.event = [], None
+        if hands_free:
+            self._prepare_detection(self.samplerate)
+        self.state = ARMED if hands_free else RECORDING
+        self._writing = not hands_free
         self._queue = queue.Queue()
         self._writer = threading.Thread(target=self._write_loop, daemon=True)
         self._writer.start()
@@ -222,7 +338,7 @@ class Recorder:
     def stop(self) -> Path | None:
         if not self._recording:
             return None
-        self._recording = False
+        self._recording = self._writing = False
         self._queue.put(None)
         self._writer.join()
         self._file.close()

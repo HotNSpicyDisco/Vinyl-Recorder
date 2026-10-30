@@ -71,7 +71,10 @@ def _levels(env: Envelope) -> tuple[float, float, float]:
     also capped well below the music level; otherwise quiet intros would count as gaps.
     """
     db = env.rms_db
-    floor = float(np.percentile(db, 5))
+    # The silence that matters is the groove noise between tracks. Stretches with the needle off the
+    # record (before it drops, a hands-free take's pre-roll) are far quieter and would hide it.
+    in_groove = db[db > NEEDLE_UP_DB]
+    floor = float(np.percentile(in_groove if len(in_groove) > 0.2 * len(db) else db, 5))
     music = float(np.percentile(db, 80))
     threshold = min(floor + max(6.0, (music - floor) * 0.3), music - QUIET_BELOW_MUSIC_DB)
     return floor, music, threshold
@@ -239,14 +242,22 @@ def find_side_breaks(env: Envelope, sides: int, side_lengths: list[float] | None
     return []
 
 
-def split_sides(env: Envelope, sides: list[list[float | None]], min_gap: float = 0.8) -> SidesResult:
-    """Split a take containing several sides. `sides` holds the Discogs track lengths for each side, in order."""
+def split_sides(env: Envelope, sides: list[list[float | None]], min_gap: float = 0.8,
+                known_breaks: list[float] | None = None) -> SidesResult:
+    """Split a take containing several sides. `sides` holds the Discogs track lengths for each side, in order.
+
+    known_breaks: where each side ended in the file, when the recorder knows (hands-free mode
+    pauses between sides, so there's no flip in the file to find).
+    """
     if len(sides) <= 1:
         r = split(env, durations=sides[0] if sides else None, track_count=len(sides[0]) if sides else None,
                   min_gap=min_gap)
         return SidesResult(*r.edges_and_skips(), [])
-    lengths = [sum(d for d in s if d) or None for s in sides]
-    breaks = find_side_breaks(env, len(sides), lengths if all(lengths) else None, min_gap)
+    if known_breaks and len(known_breaks) >= len(sides) - 1:
+        breaks = [(b, b) for b in sorted(known_breaks)[: len(sides) - 1]]
+    else:
+        lengths = [sum(d for d in s if d) or None for s in sides]
+        breaks = find_side_breaks(env, len(sides), lengths if all(lengths) else None, min_gap)
     regions, prev = [], 0.0
     for a, b in breaks:
         regions.append((prev, a))

@@ -40,6 +40,7 @@ class Settings:
     detect_bpm: bool = True
     bpm_low: float = 78.0  # BPM results fall in [bpm_low, 2 * bpm_low)
     offered_shortcuts: bool = False  # the packaged Windows app asks once about Start menu/desktop shortcuts
+    hands_free: bool = True  # wait for the needle, pause between sides, stop after the last side
     label_template: str = "avery_5163"
     label_printers: dict = field(default_factory=dict)  # template id -> printer last used for it
     label_rotate: bool = False  # thermal rolls: turn labels 90° for drivers that feed sideways

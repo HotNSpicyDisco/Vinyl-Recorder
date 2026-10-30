@@ -211,6 +211,19 @@ def test_needle_down_and_flip_noise_ignored(tmp_path):
     assert 40.0 <= edges[3] <= 40.6, edges
 
 
+def test_whole_lp_with_known_side_break(tmp_path):
+    """Hands-free takes have no flip in them: side B follows side A's run-out directly."""
+    wav = tmp_path / "lp.wav"
+    truth, _ = make_whole_lp(wav, [30, 20], [25, 22], flip=6.0, thumps=False)  # 6 s of run-out, then side B
+    env = compute_envelope(wav)
+    side_a_end_in_file = 2 + 30 + 2.5 + 20 + 6.0  # where the recorder paused
+    r = split_sides(env, [[30, 20], [25, 22]], known_breaks=[side_a_end_in_file])
+    segs = list(zip(r.edges[:-1], r.edges[1:]))
+    tracks = [s for i, s in enumerate(segs) if i not in r.skips]
+    assert len(tracks) == 4
+    assert abs(tracks[2][0] - (side_a_end_in_file)) < 0.3, tracks  # side B's first track right after the break
+
+
 def test_whole_lp_without_clear_flip_falls_back_to_lengths(tmp_path):
     wav = tmp_path / "lp.wav"
     make_whole_lp(wav, [30, 20], [30, 20], flip=2.0, thumps=False)  # flip as short as a track gap
@@ -291,7 +304,7 @@ def test_clip_counter():
     b[0:3, 0] = 1.0  # ...and continues here: still one event
     b[40, 0] = 0.5  # loud but not clipped
     r._callback(a, 100, None, ok)
-    r._recording = True  # clip times are only kept while recording
+    r._recording = r._writing = True  # clip times are only kept while audio is being written
     r._callback(b, 100, None, ok)
     c = np.zeros((100, 2), np.float32)
     c[30, :] = 1.0

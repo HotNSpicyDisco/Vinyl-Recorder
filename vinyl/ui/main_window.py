@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollBar, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
     QVBoxLayout, QWidget,
@@ -92,6 +92,7 @@ class Recording:
     skips: set[int] = field(default_factory=set)  # parts between edges that aren't tracks (record flips)
     side_order: list[str] | None = None  # order the sides were played in, if not A, B, ... (e.g. B first)
     overrides: dict[float, int] = field(default_factory=dict)  # tracks picked by hand (see vinyl.tracklist)
+    side_breaks: list[float] = field(default_factory=list)  # where sides ended, from a hands-free take
 
     @property
     def label(self) -> str:
@@ -355,7 +356,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(box)
 
         box = QGroupBox("Record")
-        h = QHBoxLayout(box)
+        h = QHBoxLayout()
         h.addWidget(QLabel("Recording:"))
         self.side_combo = QComboBox()
         self.side_combo.setMinimumWidth(230)
@@ -369,7 +370,17 @@ class MainWindow(QMainWindow):
         self.rec_time = QLabel("0:00.0")
         self.rec_time.setStyleSheet("font-size: 24px; font-family: Consolas, Menlo, monospace;")
         h.addWidget(self.rec_time)
-        h.addStretch()
+        self.rec_state = QLabel()
+        self.rec_state.setStyleSheet("font-size: 14px; font-weight: bold;")
+        h.addWidget(self.rec_state, 1)
+        rv = QVBoxLayout()
+        rv.addLayout(h)
+        self.hands_free = QCheckBox("Hands-free: start when the needle drops, pause while you flip, "
+                                    "stop after the last side")
+        self.hands_free.setChecked(self.settings.hands_free)
+        self.hands_free.toggled.connect(self._hands_free_toggled)
+        rv.addWidget(self.hands_free)
+        box.setLayout(rv)
         lay.addWidget(box)
 
         box = QGroupBox("Recorded sides")
@@ -518,15 +529,27 @@ class MainWindow(QMainWindow):
         self.meter.reset()
         self.input_state.setText(f"Listening to inputs {left} & {right} on {d.name} at {rate / 1000:g} kHz{note}")
 
+    def _hands_free_toggled(self, on: bool):
+        self.settings.hands_free = on
+        self.settings.save()
+
     def _toggle_record(self):
         if self.recorder.is_recording:
+            written = self.recorder._rec_frames
             path = self.recorder.stop()
             self.rec_btn.setText("●  Record")
+            self.rec_state.setText("")
             self.device_combo.setEnabled(True)
+            self.hands_free.setEnabled(True)
+            if path and not written:  # hands-free take stopped before the needle dropped
+                path.unlink(missing_ok=True)
+                self._status("Stopped before anything was recorded.")
+                return
             if path:
                 rec = self._add_recording(path, self.side_combo.currentData())
                 rec.clips = list(self.recorder.clip_times)
                 rec.clip_count = sum(self.recorder.clip_counts)
+                rec.side_breaks = list(self.recorder.side_breaks)
                 self._refresh_rec_labels(rec)
                 if self.release:
                     rec.release_id = self.release.id
@@ -569,8 +592,11 @@ class MainWindow(QMainWindow):
                 f"An hour of recording at this quality needs about {need_gb:.1f} GB.\n\nRecord anyway?")
             if ans != QMessageBox.StandardButton.Yes:
                 return
+        hands_free = self.hands_free.isChecked()
+        # Hands-free stops by itself after the take's last side (if the album says how many)
+        n_sides = len(take_sides(side, self.release.sides)) if self.release else None
         try:
-            self.recorder.start(path)
+            self.recorder.start(path, hands_free=hands_free, sides=n_sides)
         except Exception as e:
             self._error(f"Could not start recording: {e}")
             return
@@ -578,8 +604,39 @@ class MainWindow(QMainWindow):
         self._update_clip_label()
         self.rec_btn.setText("■  Stop")
         self.device_combo.setEnabled(False)
-        tip = "  Flip the record when side A ends and keep recording." if side == ALL_SIDES else ""
-        self._status(f"Recording {side_name(side).lower()} to {path.name}.{tip}", 0)
+        self.hands_free.setEnabled(False)
+        self._side_names = take_sides(side, self.release.sides) if self.release else []
+        if hands_free:
+            self._status(f"Recording {side_name(side).lower()} to {path.name}. Drop the needle when you're ready.", 0)
+        else:
+            tip = "  Flip the record when side A ends and keep recording." if side == ALL_SIDES else ""
+            self._status(f"Recording {side_name(side).lower()} to {path.name}.{tip}", 0)
+        self._last_state = None
+
+    def _hands_free_status(self):
+        """Show what a hands-free take is doing, and finish it when the last side is done."""
+        r = self.recorder
+        if not r.hands_free:
+            self.rec_state.setText("● Recording")
+            return
+        n = r.sides_done
+        names = self._side_names
+        side = lambda i: f"side {names[i]}" if i < len(names) else f"side {i + 1}"  # noqa: E731
+        text, color = {
+            audio.ARMED: ("Waiting for the needle…", "#d29922"),
+            audio.RECORDING: (f"● Recording {side(n)}", "#f85149"),
+            audio.PAUSED: (f"S{side(n - 1)[1:]} done. Flip the record: waiting for the needle…", "#d29922"),
+            audio.FINISHED: ("All sides recorded", "#3fb950"),
+        }[r.state]
+        self.rec_state.setText(f"<span style='color:{color}'>{text}</span>")
+        if r.state != self._last_state:
+            if r.state == audio.PAUSED:
+                QApplication.beep()  # time to flip
+            self._last_state = r.state
+        if r.event == "finished":
+            r.event = None
+            self._toggle_record()  # stop and add the take, as if Stop was pressed
+            self._status("All sides recorded. The tracks are ready on the Split & save tab.", 0)
 
     def _sides_of(self, rec: Recording) -> list[str]:
         """The sides a take covers, in the order they were played."""
@@ -615,6 +672,7 @@ class MainWindow(QMainWindow):
             self._update_clip_label()
         if self.recorder.is_recording:
             self.rec_time.setText(fmt_time(self.recorder.seconds))
+            self._hands_free_status()
             if self.recorder.overflows:
                 self._status(f"Warning: {self.recorder.overflows} audio dropouts. Close other heavy programs.", 0)
         if self.player.is_playing:
@@ -1441,7 +1499,7 @@ class MainWindow(QMainWindow):
         sides = self._sides_of(rec)
         if self.release and len(sides) > 1:  # several sides in one take: find the flips too
             per_side = [[t.duration for t in self.release.tracks_on(s)] for s in sides]
-            result = splitter.split_sides(rec.env, per_side, min_gap=gap)
+            result = splitter.split_sides(rec.env, per_side, min_gap=gap, known_breaks=rec.side_breaks)
             edges, skips = result.edges, set(result.skips)
         else:
             tracks = self._side_tracks(rec)
