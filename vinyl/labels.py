@@ -10,7 +10,7 @@ All layout is in points (1/72 inch), y going down from the top of the label.
 
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QPointF, QRectF, QSizeF, Qt
@@ -69,6 +69,14 @@ class LabelData:
     styles: list[str] = field(default_factory=list)
     release_id: int = 0
     tracks: list[LabelTrack] = field(default_factory=list)
+
+
+def to_dict(d: LabelData) -> dict:
+    return asdict(d)
+
+
+def from_dict(d: dict) -> LabelData:
+    return LabelData(**{**d, "tracks": [LabelTrack(**t) for t in d.get("tracks", [])]})
 
 
 def _norm(s: str) -> str:
@@ -323,6 +331,7 @@ class Placed:
     y: float
     tracks: list[LabelTrack]
     first: bool
+    lay: "_Layout | None" = None  # the record's layout (each record on a sheet has its own)
 
 
 def page_size(tmpl: Template) -> QSizeF:
@@ -341,28 +350,36 @@ def slots(tmpl: Template) -> list[tuple[float, float]]:
             for r in range(tmpl.rows) for c in range(tmpl.cols)]
 
 
-def place(tmpl: Template, data: LabelData, copies: int = 1, start: int = 1) -> tuple[list[Placed], _Layout]:
-    """Where each label goes. On sheets, `start` skips labels already used (1 = top-left)."""
-    lay = _Layout(tmpl.label_w * PTS, tmpl.label_h * PTS, data)
-    labels = [(c, i == 0) for _ in range(max(1, copies)) for i, c in enumerate(lay.chunks())]
+Records = LabelData | list[LabelData]
+
+
+def place(tmpl: Template, records: Records, copies: int = 1, start: int = 1) -> tuple[list[Placed], _Layout]:
+    """Where each label goes: the records one after another (each with its continuation labels).
+    On sheets, `start` skips labels already used (1 = top-left). Also returns the first record's layout."""
+    records = records if isinstance(records, list) else [records]
+    labels = []
+    for data in records:
+        lay = _Layout(tmpl.label_w * PTS, tmpl.label_h * PTS, data)
+        chunks = lay.chunks()
+        labels += [(c, i == 0, lay) for _ in range(max(1, copies)) for i, c in enumerate(chunks)]
     positions = slots(tmpl)
     slot = max(0, min(start, len(positions)) - 1) if tmpl.sheet else 0
     placed = []
-    for c, f in labels:
+    for c, f, lay in labels:
         page, k = divmod(slot, len(positions))
-        placed.append(Placed(page, *positions[k], c, f))
+        placed.append(Placed(page, *positions[k], c, f, lay))
         slot += 1
-    return placed, lay
+    return placed, placed[0].lay
 
 
-def paint_pages(p: QPainter, device_dpi: float, tmpl: Template, data: LabelData, copies: int = 1,
+def paint_pages(p: QPainter, device_dpi: float, tmpl: Template, data: Records, copies: int = 1,
                 start: int = 1, new_page=None, rotate: bool = False, outlines: bool = False,
                 max_pages: int | None = None) -> int:
     """Draw the pages on painter p (a printer, PDF or image); new_page() is called between pages.
-    rotate: turn roll labels 90° for printers whose driver feeds labels sideways.
-    outlines: draw every label position's edge (for the on-screen preview).
+    data: one record or several (a label queue). rotate: turn roll labels 90° for printers whose
+    driver feeds labels sideways. outlines: draw every label position's edge (for the on-screen preview).
     Returns the number of pages."""
-    placed, lay = place(tmpl, data, copies, start)
+    placed, _ = place(tmpl, data, copies, start)
     pages = max(pl.page for pl in placed) + 1
     w, h = tmpl.label_w * PTS, tmpl.label_h * PTS
     for page in range(min(pages, max_pages or pages)):
@@ -381,7 +398,7 @@ def paint_pages(p: QPainter, device_dpi: float, tmpl: Template, data: LabelData,
                 p.drawRoundedRect(QRectF(x * UNIT, y * UNIT, w * UNIT, h * UNIT), 6 * UNIT, 6 * UNIT)
         for pl in placed:
             if pl.page == page:
-                draw_label(p, pl.x, pl.y, lay, pl.tracks, pl.first, tmpl.thermal)
+                draw_label(p, pl.x, pl.y, pl.lay, pl.tracks, pl.first, tmpl.thermal)
         p.restore()
     return pages
 
@@ -399,19 +416,21 @@ def page_layout(tmpl: Template, rotate: bool = False) -> QPageLayout:
                        orientation, QMarginsF(0, 0, 0, 0))
 
 
-def save_pdf(path: Path, tmpl: Template, data: LabelData, copies: int = 1, start: int = 1,
+def save_pdf(path: Path, tmpl: Template, data: Records, copies: int = 1, start: int = 1,
              rotate: bool = False) -> int:
     writer = QPdfWriter(str(path))
     writer.setResolution(600)
     writer.setPageLayout(page_layout(tmpl, rotate))
-    writer.setTitle(f"{data.artist} – {data.title} labels")
+    first = data[0] if isinstance(data, list) else data
+    writer.setTitle(f"{first.artist} – {first.title} labels" if not isinstance(data, list) or len(data) == 1
+                    else f"Labels for {len(data)} records")
     p = QPainter(writer)
     pages = paint_pages(p, 600, tmpl, data, copies, start, writer.newPage, rotate)
     p.end()
     return pages
 
 
-def preview(tmpl: Template, data: LabelData, start: int = 1, dpi: int = 96, rotate: bool = False) -> QImage:
+def preview(tmpl: Template, data: Records, start: int = 1, dpi: int = 96, rotate: bool = False) -> QImage:
     """The first page as an image, with label outlines, for showing on screen."""
     size = page_size(tmpl)
     if rotate and not tmpl.sheet:
@@ -424,7 +443,7 @@ def preview(tmpl: Template, data: LabelData, start: int = 1, dpi: int = 96, rota
     return img
 
 
-def print_to(printer, tmpl: Template, data: LabelData, copies: int = 1, start: int = 1,
+def print_to(printer, tmpl: Template, data: Records, copies: int = 1, start: int = 1,
              rotate: bool = False) -> int:
     """Print on a QPrinter already set up (and chosen in the print dialog)."""
     p = QPainter(printer)

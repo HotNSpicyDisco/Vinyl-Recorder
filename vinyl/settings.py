@@ -43,6 +43,7 @@ class Settings:
     hands_free: bool = True  # wait for the needle, pause between sides, stop after the last side
     rekordbox: bool = True  # add saved albums to a rekordbox XML library
     rekordbox_prefer: str = "flac"  # when both FLAC and MP3 are saved: which Rekordbox gets
+    queue_labels: bool = True  # add each saved album to the label queue
     label_template: str = "avery_5163"
     label_printers: dict = field(default_factory=dict)  # template id -> printer last used for it
     label_rotate: bool = False  # thermal rolls: turn labels 90° for drivers that feed sideways

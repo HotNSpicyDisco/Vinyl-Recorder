@@ -1,4 +1,5 @@
-"""Print labels for a record: pick a template, see a preview, print to any printer or save a PDF."""
+"""Print labels: one record, or the label queue (a sheet full of different records). Pick a template,
+see a preview, print to any printer or save a PDF."""
 
 from pathlib import Path
 
@@ -6,28 +7,67 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QSpinBox, QVBoxLayout,
+    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+    QListWidget, QMessageBox, QPushButton, QRadioButton, QSpinBox, QVBoxLayout,
 )
 
 from .. import labels
-from ..discogs import Release
 from ..export import safe_filename
+from ..library import LabelQueue
 from ..settings import Settings
 
 PREVIEW_W = 440  # pixels
 
 
 class PrintLabelsDialog(QDialog):
-    def __init__(self, release: Release, settings: Settings, bpms=None, lengths=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Print labels · {release.artist} – {release.title}")
-        self.settings = settings
-        self.data = labels.label_data(release, bpms, lengths)
-        measured = bool(bpms or lengths)
-        lay = QHBoxLayout(self)
+    """record: the label for the record you're on (None to open on the queue only);
+    measured: whether its lengths/BPMs come from saved tracks (shown as a note)."""
 
+    def __init__(self, settings: Settings, queue: LabelQueue, record: labels.LabelData | None = None,
+                 measured: bool = False, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Print labels")
+        self.settings, self.queue, self.record = settings, queue, record
+        lay = QHBoxLayout(self)
         left = QVBoxLayout()
+
+        # What to print
+        self.one = QRadioButton(f"This record: {record.artist} – {record.title}" if record else "This record")
+        self.many = QRadioButton()
+        group = QButtonGroup(self)
+        group.addButton(self.one)
+        group.addButton(self.many)
+        self.one.setEnabled(record is not None)
+        (self.one if record else self.many).setChecked(True)
+        left.addWidget(self.one)
+        self.source = QLabel("Lengths and BPMs measured from your saved tracks." if measured else
+                             "Lengths from Discogs. Save the tracks first to print the measured lengths and BPMs.")
+        self.source.setWordWrap(True)
+        self.source.setStyleSheet("color: gray; margin-left: 22px;")
+        left.addWidget(self.source)
+        self.add_btn = QPushButton("Add this record to the label queue")
+        self.add_btn.setToolTip("Collect records and print a whole sheet of different ones later")
+        self.add_btn.clicked.connect(self._add_to_queue)
+        row = QHBoxLayout()
+        row.addSpacing(22)
+        row.addWidget(self.add_btn)
+        row.addStretch()
+        left.addLayout(row)
+        left.addWidget(self.many)
+        self.queue_list = QListWidget()
+        self.queue_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.queue_list.setMaximumHeight(150)
+        left.addWidget(self.queue_list)
+        row = QHBoxLayout()
+        self.remove_btn = QPushButton("Remove selected")
+        self.remove_btn.clicked.connect(self._remove_selected)
+        row.addWidget(self.remove_btn)
+        self.clear_btn = QPushButton("Clear queue")
+        self.clear_btn.clicked.connect(self._clear_queue)
+        row.addWidget(self.clear_btn)
+        row.addStretch()
+        left.addLayout(row)
+
         form = QFormLayout()
         self.template = QComboBox()
         for t in labels.TEMPLATES:
@@ -40,34 +80,29 @@ class PrintLabelsDialog(QDialog):
         form.addRow("Start at label:", self.start)
         self.copies = QSpinBox()
         self.copies.setRange(1, 50)
-        form.addRow("Copies:", self.copies)
+        form.addRow("Copies of each:", self.copies)
         self.rotate = QCheckBox("Turn 90° (if your printer prints the label sideways)")
         self.rotate.setChecked(settings.label_rotate)
         form.addRow("", self.rotate)
         left.addLayout(form)
-
         self.info = QLabel()
         self.info.setWordWrap(True)
         left.addWidget(self.info)
-        source = QLabel("Lengths and BPMs measured from your saved tracks." if measured else
-                        "Lengths from Discogs. Save the tracks first to print the measured lengths and BPMs.")
-        source.setWordWrap(True)
-        source.setStyleSheet("color: gray;")
-        left.addWidget(source)
         tips = QLabel("<b>Thermal printers:</b> load 4\" wide labels and choose the matching label size in the "
                       "print window if it asks. <b>Avery sheets:</b> print at 100% / Actual size, not "
                       "\"Fit to page\".")
         tips.setWordWrap(True)
+        tips.setStyleSheet("color: gray;")
         left.addWidget(tips)
         left.addStretch()
         row = QHBoxLayout()
-        b = QPushButton("Save PDF…")
-        b.clicked.connect(self._save_pdf)
-        row.addWidget(b)
-        b = QPushButton("Print…")
-        b.setDefault(True)
-        b.clicked.connect(self._print)
-        row.addWidget(b)
+        self.pdf_btn = QPushButton("Save PDF…")
+        self.pdf_btn.clicked.connect(self._save_pdf)
+        row.addWidget(self.pdf_btn)
+        self.print_btn = QPushButton("Print…")
+        self.print_btn.setDefault(True)
+        self.print_btn.clicked.connect(self._print)
+        row.addWidget(self.print_btn)
         b = QPushButton("Close")
         b.clicked.connect(self.reject)
         row.addWidget(b)
@@ -82,32 +117,84 @@ class PrintLabelsDialog(QDialog):
 
         for w in (self.template, self.start, self.copies):
             (w.currentIndexChanged if isinstance(w, QComboBox) else w.valueChanged).connect(self._update)
-        self.rotate.toggled.connect(self._update)
+        for b in (self.rotate, self.one, self.many):
+            b.toggled.connect(self._update)
+        self._fill_queue()
         self._update()
+
+    # --- the queue ---
+
+    def _fill_queue(self):
+        self.queue_list.clear()
+        for d in self.queue.items:
+            self.queue_list.addItem(f"{d.get('artist')} – {d.get('title')}")
+        n = len(self.queue.items)
+        self.many.setText(f"Label queue: {n} record{'s' if n != 1 else ''}")
+        self.many.setEnabled(n > 0)
+        if n == 0 and self.many.isChecked() and self.record:
+            self.one.setChecked(True)
+
+    def _add_to_queue(self):
+        self.queue.add(labels.to_dict(self.record))
+        self._fill_queue()
+        self._update()
+
+    def _remove_selected(self):
+        self.queue.remove([self.queue_list.row(i) for i in self.queue_list.selectedItems()])
+        self._fill_queue()
+        self._update()
+
+    def _clear_queue(self):
+        if QMessageBox.question(self, "Clear queue", "Remove every record from the label queue?") == \
+                QMessageBox.StandardButton.Yes:
+            self.queue.clear()
+            self._fill_queue()
+            self._update()
+
+    # --- printing ---
+
+    def _records(self) -> list[labels.LabelData]:
+        if self.many.isChecked():
+            return [labels.from_dict(d) for d in self.queue.items]
+        return [self.record] if self.record else []
 
     def _tmpl(self) -> labels.Template:
         return labels.TEMPLATES_BY_ID[self.template.currentData()]
 
     def _update(self, *_):
         t = self._tmpl()
+        queue_mode = self.many.isChecked()
+        for w in (self.queue_list, self.remove_btn, self.clear_btn):
+            w.setEnabled(queue_mode)
+        self.add_btn.setEnabled(not queue_mode and self.record is not None)
+        self.source.setEnabled(not queue_mode)
         self.start.blockSignals(True)
         self.start.setRange(1, t.per_page)
         self.start.blockSignals(False)
         self.start.setEnabled(t.sheet)
         self.rotate.setVisible(not t.sheet)
-        placed, _ = labels.place(t, self.data, self.copies.value(), self.start.value())
-        per_copy = len(placed) // self.copies.value()
+        records = self._records()
+        for b in (self.print_btn, self.pdf_btn):
+            b.setEnabled(bool(records))
+        if not records:
+            self.info.setText("The label queue is empty. Saved albums are added to it, or use "
+                              "\"Add this record to the label queue\".")
+            self.preview.clear()
+            return
+        placed, _ = labels.place(t, records, self.copies.value(), self.start.value())
         pages = max(p.page for p in placed) + 1
-        text = f"{len(self.data.tracks)} tracks: {per_copy} label{'s' if per_copy > 1 else ''} per copy"
-        if per_copy > 1:
-            text += " (the tracklist carries on onto the next label)"
-        if t.sheet:
-            text += f". {pages} sheet{'s' if pages > 1 else ''}."
+        what = f"{len(records)} records" if queue_mode else f"{len(self.record.tracks)} tracks"
+        text = f"{what}: {len(placed)} label{'s' if len(placed) > 1 else ''}"
+        if any(not p.first for p in placed):
+            text += " (long tracklists carry on onto the next label)"
+        text += f", {pages} {'sheet' if t.sheet else 'label'}{'s' if pages > 1 else ''}."
+        if t.sheet and pages > 1:
+            text += " The preview shows the first sheet."
         self.info.setText(text)
         size = labels.page_size(t)
         rotated = self.rotate.isChecked() and not t.sheet
         width_in = size.height() if rotated else size.width()
-        img = labels.preview(t, self.data, self.start.value(), dpi=int(PREVIEW_W / width_in), rotate=rotated)
+        img = labels.preview(t, records, self.start.value(), dpi=int(PREVIEW_W / width_in), rotate=rotated)
         self.preview.setPixmap(QPixmap.fromImage(img))
 
     def _remember(self):
@@ -117,16 +204,26 @@ class PrintLabelsDialog(QDialog):
             self.settings.label_rotate = self.rotate.isChecked()
         self.settings.save()
 
+    def _after_printing_queue(self):
+        if self.many.isChecked() and QMessageBox.question(
+                self, "Label queue", "Done with these? Clear them from the label queue?") == \
+                QMessageBox.StandardButton.Yes:
+            self.queue.clear()
+            self._fill_queue()
+            self._update()
+
     def _print(self):
         t = self._tmpl()
         rotate = self.rotate.isChecked() and not t.sheet
+        records = self._records()
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         last = self.settings.label_printers.get(t.id)
         if last and last in QPrinterInfo.availablePrinterNames():
             printer.setPrinterName(last)
         printer.setFullPage(True)  # draw from the paper's corner: the labels are placed exactly
         printer.setPageLayout(labels.page_layout(t, rotate))
-        printer.setDocName(f"{self.data.artist} – {self.data.title} labels")
+        printer.setDocName(f"Labels: {records[0].artist} – {records[0].title}" if len(records) == 1
+                           else f"Labels: {len(records)} records")
         dlg = QPrintDialog(printer, self)
         dlg.setWindowTitle("Print labels")
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -135,22 +232,25 @@ class PrintLabelsDialog(QDialog):
         printer.setPageLayout(labels.page_layout(t, rotate))
         printer.setFullPage(True)
         try:
-            labels.print_to(printer, t, self.data, self.copies.value(), self.start.value(), rotate)
+            labels.print_to(printer, t, records, self.copies.value(), self.start.value(), rotate)
         except Exception as e:  # driver problems: say so instead of failing silently
             QMessageBox.warning(self, "Print labels", f"Printing failed: {e}")
             return
         self.settings.label_printers[t.id] = printer.printerName()
         self._remember()
-        self.accept()
+        self._after_printing_queue()
 
     def _save_pdf(self):
         t = self._tmpl()
-        name = safe_filename(f"{self.data.artist} - {self.data.title} - labels ({t.id}).pdf")
-        path, _ = QFileDialog.getSaveFileName(self, "Save labels as PDF", str(Path(self.settings.output_dir) / name),
-                                              "PDF (*.pdf)")
+        records = self._records()
+        name = (f"{records[0].artist} - {records[0].title}" if len(records) == 1 else f"{len(records)} records")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save labels as PDF",
+            str(Path(self.settings.output_dir) / safe_filename(f"{name} - labels ({t.id}).pdf")), "PDF (*.pdf)")
         if not path:
             return
-        labels.save_pdf(Path(path), t, self.data, self.copies.value(), self.start.value(),
+        labels.save_pdf(Path(path), t, records, self.copies.value(), self.start.value(),
                         self.rotate.isChecked() and not t.sheet)
         self._remember()
         QMessageBox.information(self, "Print labels", f"Saved {Path(path).name}")
+        self._after_printing_queue()

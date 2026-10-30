@@ -48,6 +48,37 @@ def test_sheet_start_position_and_pages():
     assert slots[0] == (0.156 * 72, 0.5 * 72) and round(slots[1][0] - slots[0][0], 1) == round(4 * 72 + (612 - 2 * 0.156 * 72 - 8 * 72), 1)
 
 
+def test_several_records_fill_a_sheet(tmp_path):
+    small = [labels.label_data(Release(i, f"Artist {i}", f"Album {i}", "2000", [], [], "", "",
+                                       [Track("A", "One", 300, "", 1), Track("B", "Two", 300, "", 2)], "", ""))
+             for i in range(1, 9)]
+    big = labels.label_data(EIGHT)  # needs two labels
+    records = small[:4] + [big] + small[4:]
+    sheet = labels.TEMPLATES_BY_ID["avery_5163"]
+    placed, _ = labels.place(sheet, records, start=2)
+    assert len(placed) == 10  # 8 small + 2 for the big one
+    titles = [p.lay.data.title for p in placed]
+    assert titles[:6] == ["Album 1", "Album 2", "Album 3", "Album 4", "Compilation", "Compilation"]
+    assert [p.first for p in placed][4:6] == [True, False]  # the big one's continuation follows it
+    assert [p.page for p in placed].count(0) == 9 and placed[-1].page == 1  # from position 2: spills over by one
+    assert labels.save_pdf(tmp_path / "queue.pdf", sheet, records, start=2) == 2
+
+
+def test_label_data_round_trips_through_the_queue_file(tmp_path):
+    from vinyl.library import LabelQueue
+
+    d = labels.label_data(EIGHT, bpms={1: 120.0})
+    q = LabelQueue(tmp_path / "q.json")
+    q.add(labels.to_dict(d))
+    q.add(labels.to_dict(labels.label_data(EIGHT, bpms={1: 122.0})))  # same record again: replaced, not doubled
+    again = LabelQueue(tmp_path / "q.json")
+    assert len(again.items) == 1
+    back = labels.from_dict(again.items[0])
+    assert back.title == d.title and back.tracks[0].bpm == "122" and len(back.tracks) == 8
+    again.remove([0])
+    assert LabelQueue(tmp_path / "q.json").items == []
+
+
 def test_pdf_page_sizes(tmp_path):
     d = labels.label_data(EIGHT)
     expect = {"avery_5163": (612, 792, 1), "avery_5164": (612, 792, 1), "roll_4x2": (288, 144, 2),

@@ -152,5 +152,35 @@ class ReleaseEdits:
         _write(self.path, self.entries)
 
 
+class LabelQueue:
+    """Records waiting to have their labels printed, so a whole sheet can be filled at once.
+    Each entry is the label's contents (see vinyl.labels.to_dict), so printing needs no Discogs lookup."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = path or _dir() / "label_queue.json"
+        self.items: list[dict] = _read(self.path, [])
+
+    def _key(self, d: dict) -> tuple:
+        return (d.get("release_id") or 0, d.get("artist"), d.get("title"))
+
+    def add(self, label: dict) -> None:
+        """Add a record's label; one already queued for the same record is replaced (keeping its place)."""
+        for i, d in enumerate(self.items):
+            if self._key(d) == self._key(label):
+                self.items[i] = label
+                break
+        else:
+            self.items.append(label)
+        _write(self.path, self.items)
+
+    def remove(self, indexes: list[int]) -> None:
+        self.items = [d for i, d in enumerate(self.items) if i not in set(indexes)]
+        _write(self.path, self.items)
+
+    def clear(self) -> None:
+        self.items = []
+        _write(self.path, self.items)
+
+
 def thumb_path(release_id: int) -> Path:
     return _dir() / "thumbs" / f"{release_id}.jpg"

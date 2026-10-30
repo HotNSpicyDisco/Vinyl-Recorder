@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .. import audio, discogs, export, library, rekordbox, shortcuts, splitter, tempo, tracklist
+from .. import audio, discogs, export, labels, library, rekordbox, shortcuts, splitter, tempo, tracklist
 from ..settings import Settings
 from .print_labels import PrintLabelsDialog
 from .tracklist_editor import TracklistEditor
@@ -151,6 +151,10 @@ class SettingsDialog(QDialog):
                                   "disco, funk and house; use 88–175 for faster music like drum & bass.")
         form.addRow("BPM range:", self.bpm_range)
 
+        self.queue_labels = QCheckBox("Add each saved album to the label queue (File → Print label queue…)")
+        self.queue_labels.setChecked(settings.queue_labels)
+        form.addRow("Labels:", self.queue_labels)
+
         self.rekordbox = QCheckBox("Add saved albums to a Rekordbox library (rekordbox.xml in the save folder)")
         self.rekordbox.setChecked(settings.rekordbox)
         form.addRow("Rekordbox:", self.rekordbox)
@@ -183,6 +187,7 @@ class SettingsDialog(QDialog):
         self.settings.min_gap_seconds = self.min_gap.value()
         self.settings.detect_bpm = self.detect_bpm.isChecked()
         self.settings.bpm_low = self.bpm_range.currentData()
+        self.settings.queue_labels = self.queue_labels.isChecked()
         self.settings.rekordbox = self.rekordbox.isChecked()
         self.settings.rekordbox_prefer = self.rekordbox_prefer.currentData()
         self.settings.save()
@@ -209,6 +214,7 @@ class MainWindow(QMainWindow):
         self.riplog = library.RipLog()
         self.collection = library.CollectionCache()
         self.edits = library.ReleaseEdits()
+        self.label_queue = library.LabelQueue()
         self._release_cache: dict[int, discogs.Release] = {}
         self._preview_wanted: int | None = None
 
@@ -249,6 +255,9 @@ class MainWindow(QMainWindow):
         m = self.menuBar().addMenu("&File")
         act = QAction("Open recording (WAV/FLAC)…", self)
         act.triggered.connect(self._open_recording)
+        m.addAction(act)
+        act = QAction("Print label queue…", self)
+        act.triggered.connect(lambda: self._print_labels(None))
         m.addAction(act)
         act = QAction("Add all saved albums to Rekordbox", self)
         act.triggered.connect(self._rekordbox_all)
@@ -1747,6 +1756,8 @@ class MainWindow(QMainWindow):
                 rec.release_id = release.id
             self.riplog.mark_saved(release, fmt, folder, sides)
             self._refresh_marks()
+            if self.settings.queue_labels:
+                self.label_queue.add(labels.to_dict(self._label_for(release)[0]))
             if self.settings.rekordbox:
                 try:
                     rekordbox.add_folders(self.settings.rekordbox_xml,
@@ -1806,16 +1817,21 @@ class MainWindow(QMainWindow):
 
         self.run_bg(lambda: rekordbox.add_folders(xml, rekordbox.all_album_folders(out), prefer), done)
 
-    def _print_labels(self, release: discogs.Release | None):
-        """Label printing for a record, with the lengths and BPMs measured from its saved tracks."""
-        if release is None:
-            self._error("Pick the album on the Album tab first.")
-            return
+    def _label_for(self, release: discogs.Release) -> tuple[labels.LabelData, bool]:
+        """A record's label, with the lengths and BPMs measured from its saved tracks (and whether any were)."""
         bpms, lengths = export.read_saved(Path(self.settings.output_dir), release)
         if self.release and release.id == self.release.id:  # this session's results are the newest
             bpms.update({n: b for n, b in self.bpms.items() if b})
             lengths.update(self.lengths)
-        PrintLabelsDialog(release, self.settings, bpms, lengths, self).exec()
+        return labels.label_data(release, bpms, lengths), bool(bpms or lengths)
+
+    def _print_labels(self, release: discogs.Release | None):
+        """Print labels for a record (or, with release None, the label queue)."""
+        record, measured = self._label_for(release) if release else (None, False)
+        if record is None and not self.label_queue.items:
+            self._error("Pick an album first. The label queue is empty too: saved albums are added to it.")
+            return
+        PrintLabelsDialog(self.settings, self.label_queue, record, measured, self).exec()
 
     def _go_to_next_album(self, after_id: int):
         """Clear the finished album's sides and select the next record in the collection that isn't saved."""
