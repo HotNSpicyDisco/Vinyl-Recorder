@@ -37,6 +37,7 @@ class Settings:
     vinyl_only_search: bool = True
     min_gap_seconds: float = 0.8
     export_format: str = "flac"  # "flac", "mp3" or "both"
+    name_pattern: str = "{artist}/{album} ({year})/{number} - {title}"  # see vinyl.naming
     detect_bpm: bool = True
     bpm_low: float = 78.0  # BPM results fall in [bpm_low, 2 * bpm_low)
     offered_shortcuts: bool = False  # the packaged Windows app asks once about Start menu/desktop shortcuts

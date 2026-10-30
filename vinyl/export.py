@@ -13,6 +13,7 @@ from mutagen import MutagenError
 from mutagen.mp3 import MP3
 from scipy.signal import resample_poly
 
+from . import naming
 from .discogs import Release, Track
 from .tempo import DEFAULT_LOW_BPM, estimate_bpm
 
@@ -30,9 +31,11 @@ def album_name(release: Release) -> str:
     return f"{release.title} ({release.year})" if release.year else release.title
 
 
-def album_folder(output_dir: Path, release: Release, mp3_subfolder: bool = False) -> Path:
-    name = album_name(release) + (" [MP3]" if mp3_subfolder else "")
-    return output_dir / safe_filename(release.artist) / safe_filename(name)
+def album_folder(output_dir: Path, release: Release, mp3_subfolder: bool = False,
+                 pattern: str = naming.DEFAULT_PATTERN) -> Path:
+    """The folder the release's (first) track is saved in."""
+    first = release.tracks[0] if release.tracks else Track("A1", release.title, None, "", 1)
+    return naming.track_path(output_dir, release, first, "flac", pattern, mp3_subfolder=mp3_subfolder).parent
 
 
 @dataclass
@@ -51,12 +54,11 @@ class SavedTrack:
 
 
 def export_side(recording: Path, cuts: list[TrackCut], release: Release, output_dir: Path,
-                fmt: str = "flac", bpm_low: float = DEFAULT_LOW_BPM, detect_bpm: bool = True) -> list[SavedTrack]:
+                fmt: str = "flac", bpm_low: float = DEFAULT_LOW_BPM, detect_bpm: bool = True,
+                pattern: str = naming.DEFAULT_PATTERN) -> list[SavedTrack]:
+    """Cut, save and tag the tracks. `pattern` decides folders and file names (see vinyl.naming)."""
     want_flac, want_mp3 = fmt in ("flac", "both"), fmt in ("mp3", "both")
-    flac_dir = album_folder(output_dir, release)
-    mp3_dir = album_folder(output_dir, release, mp3_subfolder=fmt == "both")
-    width = max(2, len(str(len(release.tracks))))
-    saved = []
+    saved, folders = [], set()
     with sf.SoundFile(recording) as src:
         sr = src.samplerate
         subtype = "PCM_24" if src.subtype in ("PCM_24", "PCM_32", "FLOAT", "DOUBLE") else "PCM_16"
@@ -68,22 +70,23 @@ def export_side(recording: Path, cuts: list[TrackCut], release: Release, output_
             data = src.read(b - a, dtype="float32", always_2d=True)
             _fade(data, int(FADE_SECONDS * sr))
             result = SavedTrack(t, len(data) / sr, estimate_bpm(data, sr, bpm_low) if detect_bpm else None)
-            stem = f"{t.number:0{width}d} - {safe_filename(t.title)}"
             if want_flac:
-                flac_dir.mkdir(parents=True, exist_ok=True)
-                path = flac_dir / f"{stem}.flac"
+                path = naming.track_path(output_dir, release, t, "flac", pattern, result.bpm)
+                path.parent.mkdir(parents=True, exist_ok=True)
                 sf.write(path, data, sr, subtype=subtype, format="FLAC")
                 tag_flac(path, t, release, result)
                 result.files.append(path)
             if want_mp3:
-                mp3_dir.mkdir(parents=True, exist_ok=True)
-                path = mp3_dir / f"{stem}.mp3"
+                path = naming.track_path(output_dir, release, t, "mp3", pattern, result.bpm,
+                                         mp3_subfolder=fmt == "both")
+                path.parent.mkdir(parents=True, exist_ok=True)
                 write_mp3(path, data, sr)
                 tag_mp3(path, t, release, result)
                 result.files.append(path)
+            folders |= {p.parent for p in result.files}
             saved.append(result)
     if release.cover:
-        for d in {flac_dir if want_flac else None, mp3_dir if want_mp3 else None} - {None}:
+        for d in folders:
             (d / "cover.jpg").write_bytes(release.cover)
     return saved
 
@@ -183,11 +186,15 @@ def tag_mp3(path: Path, track: Track, release: Release, info: SavedTrack) -> Non
     f.save(v2_version=3)
 
 
-def read_saved(output_dir: Path, release: Release) -> tuple[dict[int, float], dict[int, float]]:
+def read_saved(output_dir: Path, release: Release,
+               pattern: str = naming.DEFAULT_PATTERN) -> tuple[dict[int, float], dict[int, float]]:
     """BPMs and lengths (by track number) from tracks already saved for this release, for labels."""
     bpms: dict[int, float] = {}
     lengths: dict[int, float] = {}
-    for folder in (album_folder(output_dir, release), album_folder(output_dir, release, mp3_subfolder=True)):
+    folders = naming.album_folders(output_dir, release, pattern)
+    if pattern != naming.DEFAULT_PATTERN:  # albums saved before the pattern was changed
+        folders += naming.album_folders(output_dir, release)
+    for folder in folders:
         if not folder.is_dir():
             continue
         for path in sorted(folder.iterdir()):

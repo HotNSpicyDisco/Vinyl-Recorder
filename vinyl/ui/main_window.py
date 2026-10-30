@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .. import audio, discogs, export, labels, library, rekordbox, shortcuts, splitter, tempo, tracklist
+from .. import audio, discogs, export, labels, library, naming, rekordbox, shortcuts, splitter, tempo, tracklist
 from ..settings import Settings
 from .print_labels import PrintLabelsDialog
 from .tracklist_editor import TracklistEditor
@@ -133,6 +133,28 @@ class SettingsDialog(QDialog):
         row.addWidget(browse)
         form.addRow("Save music to:", row)
 
+        self.name_preset = QComboBox()
+        for name, pattern in naming.PRESETS:
+            self.name_preset.addItem(name, pattern)
+        self.name_preset.addItem("Custom…", None)
+        self.pattern = QLineEdit(settings.name_pattern)
+        self.pattern.setToolTip("Fields: " + ", ".join(f"{{{k}}} = {v}" for k, v in naming.FIELDS.items())
+                                + '. "/" makes a folder.')
+        self.name_example = QLabel()
+        self.name_example.setStyleSheet("color: gray;")
+        i = self.name_preset.findData(settings.name_pattern)
+        self.name_preset.setCurrentIndex(i if i >= 0 else self.name_preset.count() - 1)
+        self.name_preset.currentIndexChanged.connect(self._preset_chosen)
+        self.pattern.textChanged.connect(self._pattern_changed)
+        form.addRow("File names:", self.name_preset)
+        form.addRow("", self.pattern)
+        fields = QLabel("Fields: " + "  ".join(f"{{{k}}}" for k in naming.FIELDS))
+        fields.setWordWrap(True)
+        fields.setStyleSheet("color: gray;")
+        form.addRow("", fields)
+        form.addRow("", self.name_example)
+        self._pattern_changed()
+
         self.min_gap = QDoubleSpinBox()
         self.min_gap.setRange(0.2, 5.0)
         self.min_gap.setSingleStep(0.1)
@@ -151,11 +173,12 @@ class SettingsDialog(QDialog):
                                   "disco, funk and house; use 88–175 for faster music like drum & bass.")
         form.addRow("BPM range:", self.bpm_range)
 
-        self.queue_labels = QCheckBox("Add each saved album to the label queue (File → Print label queue…)")
+        self.queue_labels = QCheckBox("Add each saved album to the label queue")
+        self.queue_labels.setToolTip("Print them all at once with File → Print label queue…")
         self.queue_labels.setChecked(settings.queue_labels)
         form.addRow("Labels:", self.queue_labels)
 
-        self.rekordbox = QCheckBox("Add saved albums to a Rekordbox library (rekordbox.xml in the save folder)")
+        self.rekordbox = QCheckBox("Add saved albums to rekordbox.xml (in the save folder)")
         self.rekordbox.setChecked(settings.rekordbox)
         form.addRow("Rekordbox:", self.rekordbox)
         self.rekordbox_prefer = QComboBox()
@@ -179,7 +202,29 @@ class SettingsDialog(QDialog):
         if d:
             self.output.setText(d)
 
+    def _preset_chosen(self):
+        pattern = self.name_preset.currentData()
+        if pattern:
+            self.pattern.setText(pattern)
+        else:
+            self.pattern.setFocus()
+
+    def _pattern_changed(self):
+        pattern = self.pattern.text().strip()
+        problem = naming.check(pattern)
+        self.name_example.setText(f"<span style='color:#f85149'>{problem}</span>" if problem
+                                  else f"e.g. {naming.example(pattern)}")
+        i = self.name_preset.findData(pattern)
+        self.name_preset.blockSignals(True)
+        self.name_preset.setCurrentIndex(i if i >= 0 else self.name_preset.count() - 1)
+        self.name_preset.blockSignals(False)
+
     def accept(self):
+        problem = naming.check(self.pattern.text().strip())
+        if problem:
+            QMessageBox.warning(self, "File names", problem)
+            return
+        self.settings.name_pattern = self.pattern.text().strip()
         if self.token.text().strip() != self.settings.discogs_token:
             self.settings.discogs_username = ""  # may be a different account now
         self.settings.discogs_token = self.token.text().strip()
@@ -1732,6 +1777,7 @@ class MainWindow(QMainWindow):
                 return
         release, out = self.release, Path(self.settings.output_dir)
         fmt, detect, low = self.settings.export_format, self.settings.detect_bpm, self.settings.bpm_low
+        pattern = self.settings.name_pattern
         self.settings.save()
         self.save_btn.setEnabled(False)
         self._status("Saving tracks" + (" and detecting BPM…" if detect else "…"), 0)
@@ -1741,7 +1787,8 @@ class MainWindow(QMainWindow):
         def work():
             saved = []
             for rec, cuts in jobs:
-                saved += export.export_side(rec.path, cuts, release, out, fmt=fmt, bpm_low=low, detect_bpm=detect)
+                saved += export.export_side(rec.path, cuts, release, out, fmt=fmt, bpm_low=low, detect_bpm=detect,
+                                            pattern=pattern)
             return saved
 
         def done(saved: list[export.SavedTrack]):
@@ -1751,7 +1798,8 @@ class MainWindow(QMainWindow):
             self.lengths.update({s.track.number: s.length for s in saved})
             if self.current:
                 self._update_split_view()
-            folder = export.album_folder(out, release, mp3_subfolder=False)
+            saved_folders = list(dict.fromkeys(p.parent for s in saved for p in s.files))
+            folder = saved_folders[0] if saved_folders else export.album_folder(out, release, pattern=pattern)
             for rec, _ in jobs:
                 rec.release_id = release.id
             self.riplog.mark_saved(release, fmt, folder, sides)
@@ -1760,9 +1808,7 @@ class MainWindow(QMainWindow):
                 self.label_queue.add(labels.to_dict(self._label_for(release)[0]))
             if self.settings.rekordbox:
                 try:
-                    rekordbox.add_folders(self.settings.rekordbox_xml,
-                                          [folder, export.album_folder(out, release, mp3_subfolder=True)],
-                                          self.settings.rekordbox_prefer)
+                    rekordbox.add_folders(self.settings.rekordbox_xml, saved_folders, self.settings.rekordbox_prefer)
                 except (OSError, ET.ParseError) as e:
                     self._status(f"Couldn't update the Rekordbox library: {e}", 0)
             self._status(f"Saved {len(saved)} tracks to {folder}", 0)
@@ -1819,7 +1865,7 @@ class MainWindow(QMainWindow):
 
     def _label_for(self, release: discogs.Release) -> tuple[labels.LabelData, bool]:
         """A record's label, with the lengths and BPMs measured from its saved tracks (and whether any were)."""
-        bpms, lengths = export.read_saved(Path(self.settings.output_dir), release)
+        bpms, lengths = export.read_saved(Path(self.settings.output_dir), release, self.settings.name_pattern)
         if self.release and release.id == self.release.id:  # this session's results are the newest
             bpms.update({n: b for n, b in self.bpms.items() if b})
             lengths.update(self.lengths)
