@@ -36,6 +36,7 @@ def self_test(report_path: str) -> int:
     check("audio devices", lambda: sorted({d.hostapi for d in audio.list_input_devices()}))
     check("ASIO inputs", lambda: [d.label for d in audio.list_input_devices() if d.hostapi == "ASIO"] or "none")
     check("icon", lambda: ICON.exists())
+    check("Rekordbox library reader", lambda: __import__("sqlcipher3.dbapi2").dbapi2.sqlite_version)
     with tempfile.TemporaryDirectory() as tmp:
         sr = 44100
         t = np.arange(sr * 12) / sr

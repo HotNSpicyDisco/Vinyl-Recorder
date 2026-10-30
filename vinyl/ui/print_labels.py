@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QListWidget, QMessageBox, QPushButton, QRadioButton, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .. import labels
+from .. import labels, rekordbox_db
 from ..export import safe_filename
 from ..library import LabelQueue
 from ..settings import Settings
@@ -20,7 +20,7 @@ PREVIEW_W = 440  # pixels
 
 
 class LabelOutput(QWidget):
-    """Template, start position, copies, rotate, QR; a page-by-page preview; Print and Save PDF.
+    """Template, start position, copies, rotate, QR, key; a page-by-page preview; Print and Save PDF.
 
     records_fn() gives the records to print. printed(queue_mode) is called after a print or PDF;
     `queue_mode` comes from queue_fn() (whether the label queue was what got printed)."""
@@ -51,6 +51,19 @@ class LabelOutput(QWidget):
         self.qr = QCheckBox("QR code to the record's Discogs page")
         self.qr.setChecked(settings.label_qr)
         form.addRow("", self.qr)
+        row = QHBoxLayout()
+        self.key = QCheckBox("Key column")
+        self.key.setToolTip("The key of each track, from your saved tracks or your Rekordbox library "
+                            "(after Rekordbox has analysed them)")
+        self.key.setChecked(settings.label_key)
+        row.addWidget(self.key)
+        self.notation = QComboBox()
+        for k, name in rekordbox_db.NOTATIONS.items():
+            self.notation.addItem(name, k)
+        self.notation.setCurrentIndex(max(0, self.notation.findData(settings.key_notation)))
+        row.addWidget(self.notation)
+        row.addStretch()
+        form.addRow("", row)
         left.addLayout(form)
         self.info = QLabel()
         self.info.setWordWrap(True)
@@ -95,8 +108,13 @@ class LabelOutput(QWidget):
 
         for w in (self.template, self.start, self.copies):
             (w.currentIndexChanged if isinstance(w, QComboBox) else w.valueChanged).connect(self.refresh)
-        for b in (self.rotate, self.qr):
+        for b in (self.rotate, self.qr, self.key):
             b.toggled.connect(self.refresh)
+        self.notation.currentIndexChanged.connect(self.refresh)
+
+    def key_column(self) -> str:
+        """The notation for the Key column, or "" for none."""
+        return self.notation.currentData() if self.key.isChecked() else ""
 
     def tmpl(self) -> labels.Template:
         return labels.TEMPLATES_BY_ID[self.template.currentData()]
@@ -112,6 +130,7 @@ class LabelOutput(QWidget):
         self.start.blockSignals(False)
         self.start.setEnabled(t.sheet)
         self.rotate.setVisible(not t.sheet)
+        self.notation.setEnabled(self.key.isChecked())
         records = self.records_fn()
         for b in (self.print_btn, self.pdf_btn):
             b.setEnabled(bool(records))
@@ -123,7 +142,7 @@ class LabelOutput(QWidget):
             self.next_btn.setEnabled(False)
             return
         qr, copies, start = self.qr.isChecked(), self.copies.value(), self.start.value()
-        placed, _ = labels.place(t, records, copies, start, qr)
+        placed, _ = labels.place(t, records, copies, start, qr, self.key_column())
         pages = max(p.page for p in placed) + 1
         self.page = max(0, min(self.page, pages - 1))
         what = f"{len(records)} records" if len(records) > 1 else f"{len(records[0].tracks)} tracks"
@@ -140,13 +159,15 @@ class LabelOutput(QWidget):
         rotated = self.rotate.isChecked() and not t.sheet
         width_in = size.height() if rotated else size.width()
         img = labels.preview(t, records, start, dpi=int(PREVIEW_W / width_in), rotate=rotated, qr=qr,
-                             page=self.page, copies=copies)
+                             page=self.page, copies=copies, key=self.key_column())
         self.preview.setPixmap(QPixmap.fromImage(img))
 
     def _remember(self):
         t = self.tmpl()
         self.settings.label_template = t.id
         self.settings.label_qr = self.qr.isChecked()
+        self.settings.label_key = self.key.isChecked()
+        self.settings.key_notation = self.notation.currentData()
         if not t.sheet:
             self.settings.label_rotate = self.rotate.isChecked()
         self.settings.save()
@@ -172,7 +193,7 @@ class LabelOutput(QWidget):
         printer.setFullPage(True)
         try:
             labels.print_to(printer, t, records, self.copies.value(), self.start.value(), rotate,
-                            self.qr.isChecked())
+                            self.qr.isChecked(), self.key_column())
         except Exception as e:  # driver problems: say so instead of failing silently
             QMessageBox.warning(self, "Print labels", f"Printing failed: {e}")
             return
@@ -191,7 +212,7 @@ class LabelOutput(QWidget):
         if not path:
             return
         labels.save_pdf(Path(path), t, records, self.copies.value(), self.start.value(),
-                        self.rotate.isChecked() and not t.sheet, self.qr.isChecked())
+                        self.rotate.isChecked() and not t.sheet, self.qr.isChecked(), self.key_column())
         self._remember()
         QMessageBox.information(self, "Print labels", f"Saved {Path(path).name}")
         if self.printed:
@@ -230,8 +251,9 @@ class PrintLabelsDialog(QDialog):
         self.one.setEnabled(record is not None)
         (self.one if record else self.many).setChecked(True)
         left.addWidget(self.one)
-        self.source = QLabel("Lengths and BPMs measured from your saved tracks." if measured else
-                             "Lengths from Discogs. Save the tracks first to print the measured lengths and BPMs.")
+        self.source = QLabel("Lengths, BPMs and keys from your saved tracks and Rekordbox." if measured else
+                             "Lengths from Discogs. Save the tracks first (or have them in Rekordbox) for "
+                             "lengths, BPMs and keys.")
         self.source.setWordWrap(True)
         self.source.setStyleSheet("color: gray; margin-left: 22px;")
         left.addWidget(self.source)

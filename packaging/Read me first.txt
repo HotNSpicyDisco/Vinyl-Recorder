@@ -51,7 +51,8 @@ HOW IT WORKS
    while you get the next record going.
    Wrong tracklist, or played side B first? Use "Edit tracklist..." or "played: B -> A".
 4. Labels: print sleeve labels (Avery 4x2 / 4x3 sheets or 4" thermal rolls). Every saved
-   album is queued, so you can print a whole sheet at once.
+   album is queued, so you can print a whole sheet at once. BPMs and keys come from your
+   saved tracks and, if you use Rekordbox, from your Rekordbox library.
 
 Saved albums are also added to rekordbox.xml in your save folder. In Rekordbox:
 Preferences > Advanced > Database > rekordbox xml, choose that file once.

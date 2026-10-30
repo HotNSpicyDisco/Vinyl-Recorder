@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
 
 import numpy as np
 
-from .. import (HOMEPAGE, __version__, audio, discogs, export, hum, labels, library, naming, rekordbox, shortcuts,
-                splitter, tempo, tracklist, updates)
+from .. import (HOMEPAGE, __version__, audio, discogs, export, hum, labels, library, naming, rekordbox,
+                rekordbox_db, shortcuts, splitter, tempo, tracklist, updates)
 from ..settings import Settings
 from .labels_tab import LabelsTab
 from .print_labels import PrintLabelsDialog
@@ -193,6 +193,12 @@ class SettingsDialog(QDialog):
         self.rekordbox_prefer.addItem("MP3 (for older CDJs that can't play FLAC)", "mp3")
         self.rekordbox_prefer.setCurrentIndex(max(0, self.rekordbox_prefer.findData(settings.rekordbox_prefer)))
         form.addRow("When saving both, use:", self.rekordbox_prefer)
+        self.rekordbox_library = QCheckBox("Use my Rekordbox library for BPMs and keys")
+        self.rekordbox_library.setToolTip(
+            "Labels get the BPM, key and length Rekordbox found for the same tracks, and the key Rekordbox "
+            "finds for your saved tracks is written into them. Rekordbox's library is only read, never changed.")
+        self.rekordbox_library.setChecked(settings.rekordbox_library)
+        form.addRow("", self.rekordbox_library)
         how = QLabel("In Rekordbox: Preferences → Advanced → Database → rekordbox xml → Imported Library, choose "
                      "the file once. Your albums then appear under <i>rekordbox xml</i> in the sidebar.")
         how.setWordWrap(True)
@@ -247,6 +253,7 @@ class SettingsDialog(QDialog):
         self.settings.labels_skip_lps = self.skip_lps.isChecked()
         self.settings.rekordbox = self.rekordbox.isChecked()
         self.settings.rekordbox_prefer = self.rekordbox_prefer.currentData()
+        self.settings.rekordbox_library = self.rekordbox_library.isChecked()
         self.settings.check_updates = self.check_updates.isChecked()
         self.settings.save()
         super().accept()
@@ -274,6 +281,10 @@ class MainWindow(QMainWindow):
         self.collection = library.CollectionCache()
         self.edits = library.ReleaseEdits()
         self.label_queue = library.LabelQueue()
+        self.rb_cache = rekordbox_db.Cache()  # your Rekordbox library, for BPMs and keys
+        self._rb_loading = False
+        self._rb_seen: rekordbox_db.Library | None = None
+        self._rb_again = False
         self._release_cache: dict[int, discogs.Release] = {}
         self._preview_wanted: int | None = None
 
@@ -298,6 +309,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(900, self._offer_shortcuts)
         if self.settings.check_updates and updates.due(self.settings.last_update_check):
             QTimer.singleShot(3000, lambda: self._check_updates(manual=False))
+        QTimer.singleShot(1500, lambda: self._load_rekordbox(copy_keys=True))
 
     # ---------- helpers ----------
 
@@ -325,6 +337,10 @@ class MainWindow(QMainWindow):
         m.addAction(act)
         act = QAction("Add all saved albums to Rekordbox", self)
         act.triggered.connect(self._rekordbox_all)
+        m.addAction(act)
+        act = QAction("Copy keys from Rekordbox into saved tracks", self)
+        act.setToolTip("After Rekordbox has analysed your saved tracks")
+        act.triggered.connect(lambda: self._load_rekordbox(copy_keys=True, manual=True))
         m.addAction(act)
         act = QAction("Open output folder", self)
         act.triggered.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self.settings.output_dir)))
@@ -2032,17 +2048,76 @@ class MainWindow(QMainWindow):
 
         self.run_bg(lambda: rekordbox.add_folders(xml, rekordbox.all_album_folders(out), prefer), done)
 
+    def _load_rekordbox(self, copy_keys: bool = False, manual: bool = False):
+        """(Re)read the Rekordbox library in the background if it changed; then fill in the label queue
+        and, with copy_keys, write Rekordbox's keys into the saved tracks."""
+        if not self.settings.rekordbox_library and not manual:
+            return
+        if self._rb_loading:
+            self._rb_again = self._rb_again or copy_keys or manual  # do it when the current read finishes
+            return
+        self._rb_loading = True
+        out = Path(self.settings.output_dir)
+
+        def work():
+            lib = self.rb_cache.get()
+            copied = export.copy_rekordbox_keys(out, lib) if lib and copy_keys and out.is_dir() else 0
+            return lib, copied
+
+        def done(result):
+            self._rb_loading = False
+            if self._rb_again:
+                self._rb_again = False
+                QTimer.singleShot(0, lambda: self._load_rekordbox(copy_keys=True, manual=manual))
+            lib, copied = result
+            if lib is None:
+                if manual:
+                    self._error(self.rb_cache.error or "Couldn't read the Rekordbox library.")
+                return
+            filled = self._fill_queue_from_rekordbox(lib)
+            fresh, self._rb_seen = lib is not self._rb_seen, lib
+            if fresh or filled:  # (refreshing asks again, but then nothing has changed)
+                self.labels_tab.refresh()
+            if copied or manual:
+                self._status(f"Copied Rekordbox's key into {copied} saved track{'s' if copied != 1 else ''}"
+                             + (" (Rekordbox needs to analyse them first)" if not copied else ""), 0)
+
+        def failed(msg):
+            self._rb_loading = False
+            if manual:
+                self._error(msg)
+
+        self.run_bg(work, done, failed)
+
+    def _fill_queue_from_rekordbox(self, lib: rekordbox_db.Library) -> int:
+        """Fill in missing BPMs, keys and lengths in the label queue. Returns how many tracks changed."""
+        filled = 0
+        for i, d in enumerate(self.label_queue.items):
+            data = labels.from_dict(d)
+            n = labels.fill_from_rekordbox(data, lib)
+            if n:
+                self.label_queue.items[i] = labels.to_dict(data)
+                filled += n
+        if filled:
+            self.label_queue.save()
+        return filled
+
     def _is_lp(self, release_id: int) -> bool:
         """Whether your collection lists this record as an LP (unknown records count as not)."""
         return any(i.id == release_id and i.is_lp for i in self.collection.items)
 
     def _label_for(self, release: discogs.Release) -> tuple[labels.LabelData, bool]:
         """A record's label, with the lengths and BPMs measured from its saved tracks (and whether any were)."""
-        bpms, lengths = export.read_saved(Path(self.settings.output_dir), release, self.settings.name_pattern)
+        out, pattern = Path(self.settings.output_dir), self.settings.name_pattern
+        bpms, lengths = export.read_saved(out, release, pattern)
+        keys = export.read_saved_keys(out, release, pattern)
         if self.release and release.id == self.release.id:  # this session's results are the newest
             bpms.update({n: b for n, b in self.bpms.items() if b})
             lengths.update(self.lengths)
-        return labels.label_data(release, bpms, lengths), bool(bpms or lengths)
+        label = labels.label_data(release, bpms, lengths, keys)
+        lib = self.rb_cache.library if self.settings.rekordbox_library else None
+        from_rb = labels.fill_from_rekordbox(label, lib) if lib else 0
+        return label, bool(bpms or lengths or from_rb)
 
     def _print_labels(self, release: discogs.Release | None):
         """Print labels for a record (or, with release None, the label queue)."""

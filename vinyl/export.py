@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, ID3, TALB, TBPM, TCON, TDRC, TIT2, TLEN, TPE1, TPE2, TPUB, TRCK, TXXX
+from mutagen.id3 import APIC, ID3, TALB, TBPM, TCON, TDRC, TIT2, TKEY, TLEN, TPE1, TPE2, TPUB, TRCK, TXXX
 from mutagen import File as MutagenFile
 from mutagen import MutagenError
 from mutagen.aiff import AIFF
@@ -292,11 +292,8 @@ def _id3_tags(tags: ID3, track: Track, release: Release, info: SavedTrack) -> No
         tags.add(APIC(encoding=3, mime=_mime(release.cover), type=3, desc="Cover", data=release.cover))
 
 
-def read_saved(output_dir: Path, release: Release,
-               pattern: str = naming.DEFAULT_PATTERN) -> tuple[dict[int, float], dict[int, float]]:
-    """BPMs and lengths (by track number) from tracks already saved for this release, for labels."""
-    bpms: dict[int, float] = {}
-    lengths: dict[int, float] = {}
+def _saved_tags(output_dir: Path, release: Release, pattern: str):
+    """(track number, length, BPM text, key) for each track already saved for this release."""
     folders = naming.album_folders(output_dir, release, pattern)
     if pattern != naming.DEFAULT_PATTERN:  # albums saved before the pattern was changed
         folders += naming.album_folders(output_dir, release)
@@ -308,22 +305,90 @@ def read_saved(output_dir: Path, release: Release,
                 if path.suffix.lower() == ".flac":
                     f = FLAC(path)
                     number, bpm = f.get("TRACKNUMBER", [""])[0], f.get("BPM", [""])[0]
+                    key = f.get("INITIALKEY", [""])[0]
                 elif path.suffix.lower() in AUDIO_SUFFIXES:
                     f = MutagenFile(path)
                     tags = (f.tags if f is not None else None) or {}
                     number = str(tags["TRCK"].text[0]) if "TRCK" in tags else ""
                     bpm = str(tags["TBPM"].text[0]) if "TBPM" in tags else ""
+                    key = str(tags["TKEY"].text[0]) if "TKEY" in tags else ""
                 else:
                     continue
                 n = int(number.split("/")[0])
             except (ValueError, KeyError, OSError, IndexError, MutagenError):
                 continue
-            lengths.setdefault(n, f.info.length)
-            try:
-                bpms.setdefault(n, float(bpm))
-            except ValueError:
-                pass
+            yield n, f.info.length, bpm, key
+
+
+def read_saved(output_dir: Path, release: Release,
+               pattern: str = naming.DEFAULT_PATTERN) -> tuple[dict[int, float], dict[int, float]]:
+    """BPMs and lengths (by track number) from tracks already saved for this release, for labels."""
+    bpms: dict[int, float] = {}
+    lengths: dict[int, float] = {}
+    for n, length, bpm, _ in _saved_tags(output_dir, release, pattern):
+        lengths.setdefault(n, length)
+        try:
+            bpms.setdefault(n, float(bpm))
+        except ValueError:
+            pass
     return bpms, lengths
+
+
+def read_saved_keys(output_dir: Path, release: Release, pattern: str = naming.DEFAULT_PATTERN) -> dict[int, str]:
+    """Keys (by track number) in the tracks saved for this release, e.g. copied in from Rekordbox."""
+    keys: dict[int, str] = {}
+    for n, _, _, key in _saved_tags(output_dir, release, pattern):
+        if key:
+            keys.setdefault(n, key)
+    return keys
+
+
+def read_key(path: Path) -> str:
+    """The key tag of a saved track ("" if none)."""
+    try:
+        if path.suffix.lower() == ".flac":
+            return FLAC(path).get("INITIALKEY", [""])[0]
+        f = MutagenFile(path)
+        tags = (f.tags if f is not None else None) or {}
+        return str(tags["TKEY"].text[0]) if "TKEY" in tags else ""
+    except (MutagenError, OSError, KeyError, IndexError):
+        return ""
+
+
+def write_key(path: Path, key: str, bpm: float | None = None) -> None:
+    """Store a key (classic notation, e.g. "Dm") in a saved track, and its BPM if it has none."""
+    if path.suffix.lower() == ".flac":
+        f = FLAC(path)
+        f["INITIALKEY"] = key
+        if bpm and not f.get("BPM"):
+            f["BPM"] = _bpm_text(bpm)
+        f.save()
+        return
+    f = MutagenFile(path)
+    if f.tags is None:
+        f.add_tags()
+    f.tags.add(TKEY(encoding=3, text=key))
+    if bpm and "TBPM" not in f.tags:
+        f.tags.add(TBPM(encoding=3, text=_bpm_text(bpm)))
+    f.save(v2_version=3)
+
+
+def copy_rekordbox_keys(output_dir: Path, library) -> int:
+    """Write the key Rekordbox found into every saved track it knows (a rekordbox_db.Library).
+    Returns how many files were changed."""
+    changed = 0
+    for path in output_dir.rglob("*"):
+        if path.suffix.lower() not in AUDIO_SUFFIXES or "_recordings" in path.parts:
+            continue
+        rb = library.at(path)
+        if rb is None or not rb.key or read_key(path) == rb.key:
+            continue
+        try:
+            write_key(path, rb.key, rb.bpm)
+            changed += 1
+        except (MutagenError, OSError):
+            pass  # in use or read-only: try again next time
+    return changed
 
 
 def _mime(data: bytes) -> str:

@@ -47,7 +47,7 @@ When it asks to use the microphone, click **OK**. That's how it records your aud
    (a pure volume change, nothing else). File and folder names follow a pattern you can change
    in Settings. **Save and start next album** saves in the background and takes you straight to
    the next record, so you can pick it, check levels and start recording while it saves.
-4. **Labels**: print sleeve labels with the tracklist, lengths and BPMs on Avery sheets or a
+4. **Labels**: print sleeve labels with the tracklist, lengths, BPMs and keys on Avery sheets or a
    thermal label printer, for the records you've saved or any record in your collection.
 
 ### Rekordbox
@@ -58,6 +58,17 @@ all saved albums to Rekordbox** adds the ones you saved before. In Rekordbox: **
 Advanced → Database → rekordbox xml → Imported Library**, and choose the file once. The albums
 then appear under *rekordbox xml* in the sidebar: right-click to import. Rekordbox works out the
 key itself when it analyses them.
+
+The app also reads your Rekordbox 6/7 library (a copy of it; Rekordbox's own files are never
+changed, and it can stay open):
+
+- Once Rekordbox has analysed your saved tracks, their **key** (and BPM, if a file has none) is
+  written into the files themselves. This happens when the app starts, or use **File → Copy keys
+  from Rekordbox into saved tracks**.
+- **Labels** get the BPM, key and length Rekordbox found for the same tracks (same artist and
+  title, or same album), so records you have in Rekordbox but didn't rip with this app get them too.
+
+Turn this off in **File → Settings → Use my Rekordbox library for BPMs and keys**.
 
 ![Splitting a whole LP: the grey parts are gaps and the record flip, which aren't saved](docs/split.png)
 
@@ -81,7 +92,9 @@ Discogs collection (several at once), add the album you're ripping or type one i
 them on the sheet, flip through the sheets in the preview, and print. Every saved album is also
 added to that sheet (the label queue) automatically, so a whole sheet of different records
 prints at once. LPs are left out (DJs rarely play them out): untick **Hide LPs** to label them
-too. On sheets, **Start at label** uses up a partly used sheet. Tick **QR code** for a small code linking to the record's Discogs page. Print
+too. On sheets, **Start at label** uses up a partly used sheet. Tick **QR code** for a small code
+linking to the record's Discogs page, and **Key column** for each track's key, in classic (Dm) or
+Camelot (7A) notation. Print
 at 100% / Actual size. For thermal printers, set the label size in the printer's driver. If the
 label comes out sideways, tick **Turn 90°**. The layout comes from the Discogs Label Maker app.
 
@@ -122,7 +135,8 @@ stored only on your computer:
 - macOS: `~/Library/Application Support/VinylRecorder`
 
 The app only talks to Discogs (api.discogs.com and its image server) and, once a day, to GitHub
-to see if there's a newer version (turn that off in **File → Settings**).
+to see if there's a newer version (turn that off in **File → Settings**). It reads your Rekordbox
+library on your computer; nothing from it is sent anywhere.
 
 ## Updates
 
@@ -181,6 +195,7 @@ python tools/make_icon.py                       # redraws the icons (needs Pillo
 | `vinyl/tracklist.py` | matching parts to tracks (side order, your track picks) |
 | `vinyl/labels.py` | label templates, layout, printing and PDF |
 | `vinyl/rekordbox.py` | the Rekordbox XML library |
+| `vinyl/rekordbox_db.py` | reading your Rekordbox library (BPMs, keys) and matching tracks |
 | `vinyl/updates.py` | checking GitHub for a newer release |
 | `vinyl/library.py` | the local rip log, collection cache, tracklist corrections and label queue |
 | `vinyl/ui/` | the window |

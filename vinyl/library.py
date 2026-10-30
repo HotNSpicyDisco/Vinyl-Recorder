@@ -186,6 +186,9 @@ class LabelQueue:
         _write(self.path, self.items)
         return to
 
+    def save(self) -> None:
+        _write(self.path, self.items)
+
     def has(self, label: dict) -> bool:
         return any(self._key(d) == self._key(label) for d in self.items)
 

@@ -50,6 +50,9 @@ class Settings:
     label_printers: dict = field(default_factory=dict)  # template id -> printer last used for it
     label_rotate: bool = False  # thermal rolls: turn labels 90° for drivers that feed sideways
     label_qr: bool = False  # QR code to the record's Discogs page on its label
+    label_key: bool = True  # Key column on labels
+    key_notation: str = "classic"  # "classic" (Dm) or "camelot" (7A)
+    rekordbox_library: bool = True  # fill in BPM/key from Rekordbox's library; copy its keys into saved tracks
     labels_skip_lps: bool = True  # DJs rarely play LPs out: hide them on the Labels tab, don't queue them
     check_updates: bool = True  # look for a newer release on GitHub once a day
     last_update_check: str = ""  # ISO time

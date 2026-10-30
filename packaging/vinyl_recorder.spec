@@ -32,7 +32,8 @@ a = Analysis(
         (os.path.join(ROOT, "assets", "icon.ico"), "assets"),
         (os.path.join(ROOT, "assets", "icon.png"), "assets"),
     ] + collect_data_files("certifi"),
-    hiddenimports=[] if MAC else ["win32com.propsys", "win32com.shell", "pythoncom", "pywintypes"],
+    hiddenimports=["sqlcipher3", "sqlcipher3.dbapi2"]
+                  + ([] if MAC else ["win32com.propsys", "win32com.shell", "pythoncom", "pywintypes"]),
     excludes=[
         # Not used, and large
         "tkinter", "pytest", "PyInstaller", "IPython", "matplotlib", "PIL",

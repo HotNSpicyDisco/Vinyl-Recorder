@@ -120,6 +120,7 @@ class LabelsTab(QWidget):
         self.fill_collection()
         self.fill_sheet()
         self.add_current_btn.setEnabled(self.host.release is not None)
+        self.host._load_rekordbox()  # picks up anything Rekordbox has analysed since
 
     def fill_sheet(self, select: int | None = None):
         self.sheet.blockSignals(True)
@@ -137,7 +138,7 @@ class LabelsTab(QWidget):
             return
         out = self.output
         placed, _ = labels.place(out.tmpl(), self.records(), out.copies.value(), out.start.value(),
-                                 out.qr.isChecked())
+                                 out.qr.isChecked(), out.key_column())
         title = self.queue.items[row].get("title")
         artist = self.queue.items[row].get("artist")
         page = next((p.page for p in placed if p.first and p.lay.data.title == title and p.lay.data.artist == artist),
@@ -196,8 +197,9 @@ class LabelsTab(QWidget):
             self.pick_info.setText("Your Discogs collection isn't loaded: add your token in File → Settings. "
                                    "You can still add the album being ripped, or enter one by hand.")
         elif not self._adding:
-            self.pick_info.setText(f"{len(items)} records. Saved albums print with their measured lengths "
-                                   "and BPMs.")
+            rb = " and your Rekordbox library" if h.rb_cache.library and h.settings.rekordbox_library else ""
+            self.pick_info.setText(f"{len(items)} records. Lengths, BPMs and keys come from your saved "
+                                   f"tracks{rb}.")
 
     def _hide_lps_toggled(self, on: bool):
         self.host.settings.labels_skip_lps = on

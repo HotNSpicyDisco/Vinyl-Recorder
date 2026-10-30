@@ -1,5 +1,5 @@
 """Record labels for your sleeves: artist, title, label · year · styles, and a track table with
-lengths and BPM (plus an empty rating box to write in).
+lengths, BPM and (optionally) key, plus an empty rating box to write in.
 
 The layout and fitting rules come from the Discogs Label Maker app (its labels.py), redrawn with Qt
 so the same code makes the on-screen preview, a PDF, and prints straight to any printer: a laser
@@ -17,6 +17,7 @@ from PySide6.QtCore import QMarginsF, QPointF, QRectF, QSizeF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen
 
 from .discogs import Release
+from .rekordbox_db import key_text
 
 PTS = 72
 SUFFIX_RE = re.compile(r"\s+\(\d+\)\s*$")
@@ -58,6 +59,7 @@ class LabelTrack:
     name: str  # title, with the track's artist in front on compilations
     length: str = ""  # "5:32"
     bpm: str = ""
+    key: str = ""  # classic notation ("Dm"); shown as the label's key notation asks
 
 
 @dataclass
@@ -100,9 +102,9 @@ def _bpm(bpm: float | None) -> str:
 
 
 def label_data(release: Release, bpms: dict[int, float | None] | None = None,
-               lengths: dict[int, float] | None = None) -> LabelData:
+               lengths: dict[int, float] | None = None, keys: dict[int, str] | None = None) -> LabelData:
     """What goes on the label. Measured lengths and BPMs (by track number) win over Discogs lengths."""
-    bpms, lengths = bpms or {}, lengths or {}
+    bpms, lengths, keys = bpms or {}, lengths or {}, keys or {}
     artist = _clean(release.artist)
     tracks = []
     for t in release.tracks:
@@ -110,9 +112,35 @@ def label_data(release: Release, bpms: dict[int, float | None] | None = None,
         if t.artist and t.artist.lower() != artist.lower() and t.artist.lower() not in VARIOUS:
             name = f"{_clean(t.artist)} – {name}"
         tracks.append(LabelTrack(t.position, name, _length(lengths.get(t.number) or t.duration),
-                                 _bpm(bpms.get(t.number))))
+                                 _bpm(bpms.get(t.number)), keys.get(t.number, "")))
     return LabelData(artist, _clean(release.title), _clean(release.label), release.year,
                      (release.styles or release.genres)[:3], release.id if release.id > 0 else 0, tracks)
+
+
+def _seconds(length: str) -> float | None:
+    m = re.fullmatch(r"(\d+):(\d\d)", length or "")
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def fill_from_rekordbox(data: LabelData, library) -> int:
+    """Fill in missing BPMs, keys and lengths from the same tracks in your Rekordbox library
+    (a rekordbox_db.Library). Returns how many tracks got something."""
+    filled = 0
+    for t in data.tracks:
+        if t.bpm and t.key and t.length:
+            continue
+        artist, title = data.artist, t.name
+        if " – " in t.name:  # compilations: "Track artist – Title"
+            artist, title = t.name.split(" – ", 1)
+        rb = library.find(artist, title, data.title, _seconds(t.length))
+        if rb is None:
+            continue
+        before = (t.bpm, t.key, t.length)
+        t.bpm = t.bpm or _bpm(rb.bpm)
+        t.key = t.key or rb.key
+        t.length = t.length or _length(rb.seconds)
+        filled += (t.bpm, t.key, t.length) != before
+    return filled
 
 
 # ---------- text helpers (Qt) ----------
@@ -189,7 +217,7 @@ def discogs_url(release_id: int) -> str:
 
 
 class _Layout:
-    def __init__(self, w: float, h: float, data: LabelData, qr: bool = False):
+    def __init__(self, w: float, h: float, data: LabelData, qr: bool = False, key: str = ""):
         k = 1.15 if h > 3.2 * PTS else 1.0  # a little larger on 4" × 3⅓" labels
         self.k, self.w, self.h, self.data = k, w, h, data
         self.pad = 7
@@ -204,7 +232,9 @@ class _Layout:
         self.pos_w = max([_width(t.position, self.f_row) for t in data.tracks] + [8]) + 5
         self.len_w = _width("00:00", self.f_row) + 6 if self.has_len else 0
         self.box_w, self.col_gap = 21 * k, 3
-        self.track_w = self.inner_w - self.pos_w - self.len_w - 2 * (self.box_w + self.col_gap)
+        self.key = key  # "" = no Key column, else the notation ("classic" / "camelot")
+        boxes = 3 if key else 2
+        self.track_w = self.inner_w - self.pos_w - self.len_w - boxes * (self.box_w + self.col_gap)
         self.table_head_h = self.meta + 6
         self.apply(FIT_STEPS[0])
 
@@ -315,11 +345,12 @@ def draw_label(p: QPainter, x: float, y: float, lay: _Layout, tracks: list[Label
             draw_qr(p, right - lay.qr, top, lay.qr, discogs_url(d.release_id))
             yy = max(yy, top + lay.qr + 1)
 
-    # Track table: Pos | Track | Len | BPM | Rtg (the boxes stay drawn to write in by hand)
+    # Track table: Pos | Track | Len | BPM | Key | Rtg (the boxes stay drawn to write in by hand)
     x_pos, x_track = left, left + lay.pos_w
     x_len = x_track + lay.track_w
     x_bpm = x_len + lay.len_w
-    x_rtg = x_bpm + lay.box_w + lay.col_gap
+    x_key = x_bpm + lay.box_w + lay.col_gap if lay.key else None
+    x_rtg = (x_key if lay.key else x_bpm) + lay.box_w + lay.col_gap
     table_top = yy
     rows_top = table_top + lay.table_head_h - 1.5
     p.setPen(QPen(ink, 0.5 * UNIT))
@@ -327,7 +358,7 @@ def draw_label(p: QPainter, x: float, y: float, lay: _Layout, tracks: list[Label
     p.setPen(grey)
     hdr = table_top + lay.meta + 1.5
     heads = [(x_pos, "Pos"), (x_track, "Track")] + ([(x_len, "Len")] if lay.has_len else []) + \
-            [(x_bpm, "BPM"), (x_rtg, "Rtg")]
+            [(x_bpm, "BPM")] + ([(x_key, "Key")] if lay.key else []) + [(x_rtg, "Rtg")]
     for hx, h in heads:
         _text(p, hx, hdr, h, lay.f_meta, 40)
     p.setPen(QPen(ink, 0.5 * UNIT))
@@ -348,11 +379,13 @@ def draw_label(p: QPainter, x: float, y: float, lay: _Layout, tracks: list[Label
             _text(p, x_len, base, t.length, lay.f_row, lay.len_w - 3)
         p.setPen(box_pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        for bx in (x_bpm, x_rtg):
+        for bx in (x_bpm, x_key, x_rtg) if lay.key else (x_bpm, x_rtg):
             p.drawRect(QRectF(bx * UNIT, cell * UNIT, lay.box_w * UNIT, h * UNIT))
         p.setPen(ink)
         if t.bpm:
             _text(p, x_bpm + lay.box_w / 2, base, t.bpm, lay.f_row, lay.box_w - 2, align="center")
+        if lay.key and t.key:
+            _text(p, x_key + lay.box_w / 2, base, key_text(t.key, lay.key), lay.f_row, lay.box_w - 2, align="center")
         cell += h
 
 
@@ -388,14 +421,14 @@ Records = LabelData | list[LabelData]
 
 
 def place(tmpl: Template, records: Records, copies: int = 1, start: int = 1,
-          qr: bool = False) -> tuple[list[Placed], _Layout]:
+          qr: bool = False, key: str = "") -> tuple[list[Placed], _Layout]:
     """Where each label goes: the records one after another (each with its continuation labels).
     On sheets, `start` skips labels already used (1 = top-left). qr: add the Discogs QR code.
     Also returns the first record's layout."""
     records = records if isinstance(records, list) else [records]
     labels = []
     for data in records:
-        lay = _Layout(tmpl.label_w * PTS, tmpl.label_h * PTS, data, qr)
+        lay = _Layout(tmpl.label_w * PTS, tmpl.label_h * PTS, data, qr, key)
         chunks = lay.chunks()
         labels += [(c, i == 0, lay) for _ in range(max(1, copies)) for i, c in enumerate(chunks)]
     positions = slots(tmpl)
@@ -410,12 +443,13 @@ def place(tmpl: Template, records: Records, copies: int = 1, start: int = 1,
 
 def paint_pages(p: QPainter, device_dpi: float, tmpl: Template, data: Records, copies: int = 1,
                 start: int = 1, new_page=None, rotate: bool = False, outlines: bool = False,
-                max_pages: int | None = None, qr: bool = False, only_page: int | None = None) -> int:
+                max_pages: int | None = None, qr: bool = False, only_page: int | None = None,
+                key: str = "") -> int:
     """Draw the pages on painter p (a printer, PDF or image); new_page() is called between pages.
     data: one record or several (a label queue). rotate: turn roll labels 90° for printers whose
     driver feeds labels sideways. outlines: draw every label position's edge (for the on-screen preview).
     only_page: draw just that page (0-based), for previewing. Returns the number of pages."""
-    placed, _ = place(tmpl, data, copies, start, qr)
+    placed, _ = place(tmpl, data, copies, start, qr, key)
     pages = max(pl.page for pl in placed) + 1
     w, h = tmpl.label_w * PTS, tmpl.label_h * PTS
     todo = [only_page] if only_page is not None else range(min(pages, max_pages or pages))
@@ -454,7 +488,7 @@ def page_layout(tmpl: Template, rotate: bool = False) -> QPageLayout:
 
 
 def save_pdf(path: Path, tmpl: Template, data: Records, copies: int = 1, start: int = 1,
-             rotate: bool = False, qr: bool = False) -> int:
+             rotate: bool = False, qr: bool = False, key: str = "") -> int:
     writer = QPdfWriter(str(path))
     writer.setResolution(600)
     writer.setPageLayout(page_layout(tmpl, rotate))
@@ -462,13 +496,13 @@ def save_pdf(path: Path, tmpl: Template, data: Records, copies: int = 1, start: 
     writer.setTitle(f"{first.artist} – {first.title} labels" if not isinstance(data, list) or len(data) == 1
                     else f"Labels for {len(data)} records")
     p = QPainter(writer)
-    pages = paint_pages(p, 600, tmpl, data, copies, start, writer.newPage, rotate, qr=qr)
+    pages = paint_pages(p, 600, tmpl, data, copies, start, writer.newPage, rotate, qr=qr, key=key)
     p.end()
     return pages
 
 
 def preview(tmpl: Template, data: Records, start: int = 1, dpi: int = 96, rotate: bool = False,
-            qr: bool = False, page: int = 0, copies: int = 1) -> QImage:
+            qr: bool = False, page: int = 0, copies: int = 1, key: str = "") -> QImage:
     """One page (0-based) as an image, with label outlines, for showing on screen."""
     size = page_size(tmpl)
     if rotate and not tmpl.sheet:
@@ -476,15 +510,17 @@ def preview(tmpl: Template, data: Records, start: int = 1, dpi: int = 96, rotate
     img = QImage(int(size.width() * dpi), int(size.height() * dpi), QImage.Format.Format_RGB32)
     img.fill(QColor(255, 255, 255))
     p = QPainter(img)
-    paint_pages(p, dpi, tmpl, data, copies, start, rotate=rotate, outlines=True, qr=qr, only_page=page)
+    paint_pages(p, dpi, tmpl, data, copies, start, rotate=rotate, outlines=True, qr=qr, only_page=page,
+                key=key)
     p.end()
     return img
 
 
 def print_to(printer, tmpl: Template, data: Records, copies: int = 1, start: int = 1,
-             rotate: bool = False, qr: bool = False) -> int:
+             rotate: bool = False, qr: bool = False, key: str = "") -> int:
     """Print on a QPrinter already set up (and chosen in the print dialog)."""
     p = QPainter(printer)
-    pages = paint_pages(p, printer.resolution(), tmpl, data, copies, start, printer.newPage, rotate, qr=qr)
+    pages = paint_pages(p, printer.resolution(), tmpl, data, copies, start, printer.newPage, rotate, qr=qr,
+                        key=key)
     p.end()
     return pages

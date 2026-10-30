@@ -6,5 +6,6 @@ scipy>=1.13
 mutagen>=1.47
 requests>=2.32
 segno>=1.6
+sqlcipher3-wheels>=0.5.7  # reads the Rekordbox library (master.db)
 pywin32>=306; sys_platform == "win32"
 pytest>=8
