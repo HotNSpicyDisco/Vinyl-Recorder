@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
 
 import numpy as np
 
-from .. import (audio, discogs, export, hum, labels, library, naming, rekordbox, shortcuts, splitter, tempo,
-                tracklist)
+from .. import (HOMEPAGE, __version__, audio, discogs, export, hum, labels, library, naming, rekordbox, shortcuts,
+                splitter, tempo, tracklist, updates)
 from ..settings import Settings
 from .labels_tab import LabelsTab
 from .print_labels import PrintLabelsDialog
@@ -196,6 +196,10 @@ class SettingsDialog(QDialog):
         how.setStyleSheet("color: gray;")
         form.addRow("", how)
 
+        self.check_updates = QCheckBox("Check GitHub for a new version once a day")
+        self.check_updates.setChecked(settings.check_updates)
+        form.addRow("Updates:", self.check_updates)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -239,6 +243,7 @@ class SettingsDialog(QDialog):
         self.settings.queue_labels = self.queue_labels.isChecked()
         self.settings.rekordbox = self.rekordbox.isChecked()
         self.settings.rekordbox_prefer = self.rekordbox_prefer.currentData()
+        self.settings.check_updates = self.check_updates.isChecked()
         self.settings.save()
         super().accept()
 
@@ -259,6 +264,7 @@ class MainWindow(QMainWindow):
         self.preview: discogs.Release | None = None
         self.current: Recording | None = None
         self.bpms: dict[int, float | None] = {}  # track number -> BPM found when saving
+        self._saving: dict[int, discogs.Release] = {}  # albums being saved in the background, by release id
         self.lengths: dict[int, float] = {}  # track number -> length as saved
         self.riplog = library.RipLog()
         self.collection = library.CollectionCache()
@@ -286,6 +292,8 @@ class MainWindow(QMainWindow):
         if (shortcuts.SUPPORTED and shortcuts.FROZEN and not self.settings.offered_shortcuts
                 and not shortcuts.start_menu_shortcut_exists()):
             QTimer.singleShot(900, self._offer_shortcuts)
+        if self.settings.check_updates and updates.due(self.settings.last_update_check):
+            QTimer.singleShot(3000, lambda: self._check_updates(manual=False))
 
     # ---------- helpers ----------
 
@@ -328,6 +336,70 @@ class MainWindow(QMainWindow):
         act = QAction("Quit", self)
         act.triggered.connect(self.close)
         m.addAction(act)
+
+        m = self.menuBar().addMenu("&Help")
+        act = QAction("Check for updates…", self)
+        act.triggered.connect(lambda: self._check_updates(manual=True))
+        m.addAction(act)
+        act = QAction("Vinyl Recorder on GitHub", self)
+        act.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(HOMEPAGE)))
+        m.addAction(act)
+        act = QAction("About Vinyl Recorder", self)
+        act.triggered.connect(lambda: QMessageBox.about(
+            self, "About Vinyl Recorder",
+            f"<b>Vinyl Recorder {__version__}</b><br><br>Record your records, look them up on Discogs, split "
+            f"them into tracks and print labels.<br><br><a href='{HOMEPAGE}'>{HOMEPAGE}</a>"))
+        m.addAction(act)
+
+    # ---------- updates ----------
+
+    def _check_updates(self, manual: bool):
+        """Ask GitHub for the latest release. Automatic checks stay quiet unless there is something new."""
+        def done(update):
+            self.settings.last_update_check = datetime.now().isoformat(timespec="seconds")
+            self.settings.save()
+            if not update:
+                if manual:
+                    QMessageBox.information(self, "Vinyl Recorder", f"You have the latest version ({__version__}).")
+                return
+            if not manual and update.version == self.settings.skipped_version:
+                return
+            if self.recorder.is_recording:  # don't interrupt a take with a dialog
+                self._status(f"Vinyl Recorder {update.version} is out: Help → Check for updates", 30000)
+                return
+            self._offer_update(update, manual)
+
+        def failed(msg):
+            if manual:
+                QMessageBox.warning(self, "Vinyl Recorder", f"Couldn't reach GitHub to check for updates.\n\n{msg}")
+
+        self.run_bg(updates.check, done, failed)
+
+    def _offer_update(self, update: updates.Update, manual: bool):
+        notes = update.notes if len(update.notes) <= 1200 else update.notes[:1200].rsplit("\n", 1)[0] + "\n…"
+        if shortcuts.FROZEN:
+            how = ("Download the zip, close Vinyl Recorder, and unzip it over your old Vinyl Recorder folder "
+                   "(on a Mac: drag the new app into Applications and choose Replace). "
+                   "Your settings, collection and label queue are kept.")
+        else:
+            how = "You're running from source: run <code>git pull</code> in the app's folder to update."
+        box = QMessageBox(self)
+        box.setWindowTitle("Update available")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(f"<b>Vinyl Recorder {update.version}</b> is out. You have {__version__}.<br><br>{how}")
+        if notes:
+            box.setDetailedText(notes)
+        download = box.addButton("Download" if shortcuts.FROZEN else "Open release page",
+                                 QMessageBox.ButtonRole.AcceptRole)
+        skip = None if manual else box.addButton("Skip this version", QMessageBox.ButtonRole.RejectRole)
+        box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is download:
+            QDesktopServices.openUrl(QUrl(update.download if shortcuts.FROZEN else update.page))
+        elif skip is not None and box.clickedButton() is skip:
+            self.settings.skipped_version = update.version
+            self.settings.save()
 
     def _offer_shortcuts(self):
         self.settings.offered_shortcuts = True
@@ -715,6 +787,8 @@ class MainWindow(QMainWindow):
             audio.PAUSED: (f"S{side(n - 1)[1:]} done. Flip the record: waiting for the needle…", "#d29922"),
             audio.FINISHED: ("All sides recorded", "#3fb950"),
         }[r.state]
+        if r.state == audio.RECORDING and r.ending:
+            text = f"● Recording {side(n)}: quiet. At the end? Lift the needle to finish the side"
         self.rec_state.setText(f"<span style='color:{color}'>{text}</span>")
         if r.state != self._last_state:
             if r.state == audio.PAUSED:
@@ -1160,7 +1234,8 @@ class MainWindow(QMainWindow):
         for step in range(1, rows + 1):
             row = (start + step) % rows
             item = self.coll_list.item(row)
-            if self.riplog.status(item.data(Qt.ItemDataRole.UserRole)) != library.SAVED:
+            rid = item.data(Qt.ItemDataRole.UserRole)
+            if self.riplog.status(rid) != library.SAVED and rid not in self._saving:
                 self.album_source.setCurrentIndex(0)
                 self.coll_list.setCurrentRow(row)
                 self.coll_list.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
@@ -1340,6 +1415,7 @@ class MainWindow(QMainWindow):
         for rec in self.recordings:
             rec.edges = []  # re-detect against the new tracklist
         self.album_label.setText(f"<b>{self.release.artist} – {self.release.title}</b> ({self.release.year})")
+        self._set_save_buttons()
         self._update_record_album()
         self._refresh_split_choices()
         self.tabs.setCurrentIndex(TAB_SPLIT if self.recordings else TAB_RECORD)
@@ -1489,16 +1565,23 @@ class MainWindow(QMainWindow):
         self.save_btn = QPushButton()
         self.save_btn.setMinimumHeight(40)
         self.save_btn.setStyleSheet("QPushButton { font-weight: bold; }")
-        self.save_btn.clicked.connect(self._save_all)
+        self.save_btn.clicked.connect(lambda: self._save_all(then_next=False))
         row.addWidget(self.save_btn)
+        self.save_next_btn = QPushButton("Save and start next album  →")
+        self.save_next_btn.setMinimumHeight(40)
+        self.save_next_btn.setStyleSheet("QPushButton { font-weight: bold; }")
+        self.save_next_btn.setToolTip("Saves in the background while you pick the next record, check levels and "
+                                      "start recording. You'll see in the status bar when it's done.")
+        self.save_next_btn.clicked.connect(lambda: self._save_all(then_next=True))
+        row.addWidget(self.save_next_btn)
         lay.addLayout(row)
         self._format_changed()
         return w
 
     def _format_changed(self):
         self.settings.export_format = self.format_combo.currentData()
-        name = {"flac": "FLAC", "mp3": "MP3", "both": "FLAC + MP3"}[self.settings.export_format]
-        self.save_btn.setText(f"Save all sides as {name}")
+        name = export.SHORT_NAMES.get(self.settings.export_format, "FLAC")
+        self.save_btn.setText(f"Save all tracks as {name}")
 
     def _refresh_split_choices(self):
         keep = self.current
@@ -1784,7 +1867,9 @@ class MainWindow(QMainWindow):
         else:
             self._play(self.wave.cursor)
 
-    def _save_all(self):
+    def _save_all(self, then_next: bool = False):
+        """Save every side's tracks. then_next: save in the background and go straight on to the next
+        album, so the next record can be picked and recorded while this one saves."""
         if not self.release:
             self._error("Pick the album on the Album tab first.")
             return
@@ -1827,7 +1912,11 @@ class MainWindow(QMainWindow):
         fmt, detect, low = self.settings.export_format, self.settings.detect_bpm, self.settings.bpm_low
         pattern, normalize = self.settings.name_pattern, self.settings.normalize
         self.settings.save()
-        self.save_btn.setEnabled(False)
+        if release.id in self._saving:
+            self._error(f"{release.artist} – {release.title} is already being saved.")
+            return
+        self._saving[release.id] = release
+        self._set_save_buttons()
         self._status("Saving tracks" + (" and detecting BPM…" if detect else "…"), 0)
 
         sides = [s for rec, _ in jobs for s in self._sides_of(rec)]
@@ -1845,12 +1934,15 @@ class MainWindow(QMainWindow):
             return saved
 
         def done(saved: list[export.SavedTrack]):
-            self.save_btn.setEnabled(True)
-            if detect:
-                self.bpms.update({s.track.number: s.bpm for s in saved})
-            self.lengths.update({s.track.number: s.length for s in saved})
-            if self.current:
-                self._update_split_view()
+            self._saving.pop(release.id, None)
+            self._set_save_buttons()
+            still_here = self.release is not None and self.release.id == release.id
+            if still_here:  # not moved on to the next album meanwhile
+                if detect:
+                    self.bpms.update({s.track.number: s.bpm for s in saved})
+                self.lengths.update({s.track.number: s.length for s in saved})
+                if self.current:
+                    self._update_split_view()
             saved_folders = list(dict.fromkeys(p.parent for s in saved for p in s.files))
             folder = saved_folders[0] if saved_folders else export.album_folder(out, release, pattern=pattern)
             for rec, _ in jobs:
@@ -1865,6 +1957,11 @@ class MainWindow(QMainWindow):
                 except (OSError, ET.ParseError) as e:
                     self._status(f"Couldn't update the Rekordbox library: {e}", 0)
             self._status(f"Saved {len(saved)} tracks to {folder}", 0)
+            if then_next or not still_here or self.recorder.is_recording:
+                # Busy with the next record: don't interrupt with a window
+                self._status(f"✓ Saved {release.artist} – {release.title}: {len(saved)} tracks to {folder}"
+                             + (" · still saving another album…" if self._saving else ""), 0)
+                return
             lines = [f"{s.track.position}  {s.track.title}  ·  {fmt_time(s.length)[:-2]}"
                      + (f"  ·  {s.bpm:g} BPM" if s.bpm else ("  ·  BPM not found" if detect else ""))
                      for s in saved]
@@ -1886,10 +1983,22 @@ class MainWindow(QMainWindow):
                 self._go_to_next_album(release.id)
 
         def failed(msg):
-            self.save_btn.setEnabled(True)
-            self._error(f"Saving failed: {msg}")
+            self._saving.pop(release.id, None)
+            self._set_save_buttons()
+            self._error(f"Saving {release.artist} – {release.title} failed: {msg}\n\nThe recording is still in the "
+                        "_recordings folder: open it with File → Open recording to try again.")
 
         self.run_bg(work, done, failed)
+        if then_next:
+            self._go_to_next_album(release.id)
+            self._status(f"Saving {release.artist} – {release.title} in the background. Pick the next record "
+                         "and start recording whenever you're ready.", 0)
+
+    def _set_save_buttons(self):
+        """The save buttons are off while the album shown is being saved."""
+        busy = self.release is not None and self.release.id in self._saving
+        self.save_btn.setEnabled(not busy)
+        self.save_next_btn.setEnabled(not busy)
 
     def _after_save_dialog(self, text: str, offer_next: bool) -> str:
         box = QMessageBox(QMessageBox.Icon.Information, "Saved", text, parent=self)
@@ -1945,6 +2054,13 @@ class MainWindow(QMainWindow):
     # ---------- shutdown ----------
 
     def closeEvent(self, e):
+        if self._saving:
+            names = ", ".join(f"{r.artist} – {r.title}" for r in self._saving.values())
+            ans = QMessageBox.question(self, "Still saving", f"Still saving {names}.\n\nQuit anyway? "
+                                       "(Its tracks won't all be saved.)")
+            if ans != QMessageBox.StandardButton.Yes:
+                e.ignore()
+                return
         if self.recorder.is_recording:
             ans = QMessageBox.question(self, "Still recording", "Stop recording and quit?")
             if ans != QMessageBox.StandardButton.Yes:

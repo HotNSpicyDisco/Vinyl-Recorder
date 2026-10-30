@@ -50,6 +50,9 @@ class Settings:
     label_printers: dict = field(default_factory=dict)  # template id -> printer last used for it
     label_rotate: bool = False  # thermal rolls: turn labels 90° for drivers that feed sideways
     label_qr: bool = False  # QR code to the record's Discogs page on its label
+    check_updates: bool = True  # look for a newer release on GitHub once a day
+    last_update_check: str = ""  # ISO time
+    skipped_version: str = ""  # "Skip this version" for this release
     extra: dict = field(default_factory=dict)
 
     @property

@@ -1,4 +1,5 @@
-"""Hands-free recording: wait for the needle, pause at the run-out groove, re-arm, finish after the last side."""
+"""Hands-free recording: wait for the needle, pause when it's lifted after the run-out, re-arm, finish after the
+last side."""
 
 from types import SimpleNamespace
 
@@ -52,35 +53,52 @@ def test_two_sides_hands_free(tmp_path):
 
     states = feed(r, np.concatenate([noise(rng, 0.4, -15), noise(rng, 10, -20)]))  # needle drop, side A
     assert states == [ARMED, RECORDING]
-    states = feed(r, runout(rng, 8))  # side A's run-out groove: pauses after 6 s
-    assert PAUSED in states and len(r.side_breaks) == 1
+    feed(r, runout(rng, 8))  # side A's run-out groove: it might be the end, but keeps recording
+    assert r.state == RECORDING and r.ending and not r.side_breaks
 
-    # Lift, flip (silence with a click), drop the needle on side B
-    feed(r, np.concatenate([runout(rng, 1)[:200] * 0 + noise(rng, 0.025, -30)[:200], noise(rng, 3, -85)]))
-    assert r.state == PAUSED  # the run-out clicks and the lift didn't restart it
-    states = feed(r, np.concatenate([noise(rng, 0.4, -15), noise(rng, 8, -20)]))
+    feed(r, noise(rng, 3, -85))  # lift the needle and flip: the side ends
+    assert r.state == PAUSED and len(r.side_breaks) == 1 and not r.ending
+    states = feed(r, np.concatenate([noise(rng, 0.4, -15), noise(rng, 8, -20)]))  # drop it on side B
     assert RECORDING in states
-    states = feed(r, runout(rng, 8))
+    feed(r, np.concatenate([runout(rng, 8), noise(rng, 1, -85)]))
     assert r.state == FINISHED and r.event == "finished" and len(r.side_breaks) == 2
 
     path = r.stop()
     seconds = sf.info(path).duration
-    # Side A: up to 2 s of pre-roll + 10.4 s + ~6 s of run-out; side B: pre-roll + 8.4 s + ~6 s
-    assert 30 < seconds < 37, seconds
+    # Side A: up to 2 s of pre-roll + 10.4 s + 8 s run-out + the lift; side B: pre-roll + 8.4 s + 8 s + lift
+    assert 34 < seconds < 42, seconds
     a_end = r.side_breaks[0]
-    assert 16 < a_end < 19.5, a_end  # where side A stopped in the file
-    # Nothing from the flip was written: the file has no 3 s stretch of needle-up silence
+    assert 18 < a_end < 22, a_end  # where side A stopped in the file
+    # Most of the flip wasn't written: no long stretch of needle-up silence
     with sf.SoundFile(path) as f:
         x = f.read(dtype="float32")[:, 0]
     blocks = np.sqrt(np.mean(x[: len(x) // 800 * 800].reshape(-1, 800) ** 2, axis=1))
     silent_run = max((len(s) for s in "".join("s" if b < 1e-3 else "." for b in blocks).split(".")), default=0)
-    assert silent_run * 0.1 < 2.5, silent_run * 0.1
+    assert silent_run * 0.1 < 3, silent_run * 0.1
+
+
+def test_long_gap_inside_a_side_keeps_recording(tmp_path):
+    """A 10 s quiet stretch in the groove (a long gap, a very quiet intro) isn't the end of the side."""
+    rng = np.random.default_rng(5)
+    r = make_recorder(tmp_path, sides=1)
+    feed(r, np.concatenate([noise(rng, 0.5, -85), noise(rng, 8, -18), runout(rng, 10), noise(rng, 8, -18)]))
+    assert r.state == RECORDING and not r.side_breaks and not r.ending
+    path = r.stop()
+    assert sf.info(path).duration > 26  # nothing was dropped
+
+
+def test_runout_left_spinning_ends_the_side(tmp_path):
+    rng = np.random.default_rng(6)
+    r = make_recorder(tmp_path, sides=2)
+    feed(r, np.concatenate([noise(rng, 0.5, -85), noise(rng, 8, -18), runout(rng, 22)]))
+    assert r.state == PAUSED and len(r.side_breaks) == 1
+    r.stop()
 
 
 def test_no_album_keeps_going_until_stopped(tmp_path):
     rng = np.random.default_rng(2)
     r = make_recorder(tmp_path, sides=None)
-    feed(r, np.concatenate([noise(rng, 0.5, -85), noise(rng, 6, -20), runout(rng, 7)]))
+    feed(r, np.concatenate([noise(rng, 0.5, -85), noise(rng, 6, -20), runout(rng, 7), noise(rng, 1, -85)]))
     assert r.state == PAUSED and r.event is None  # waits for another side
     r.stop()
 

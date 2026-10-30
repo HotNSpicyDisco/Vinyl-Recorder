@@ -286,5 +286,28 @@ win._edit_tracklist(None)
 pump(0.3)
 print("entered by hand:", win.release.title, "| on tab:", win.tabs.currentIndex() == TAB_RECORD,
       "| record options:", [win.side_combo.itemText(i) for i in range(win.side_combo.count())])
+# ---- "Save and start next album": saves in the background, no window, straight to the next record ----
+win.preview = Release(103, "Donna Summer", "Bad Girls", "1979", [], [], "Casablanca", "NBLP 2-7150",
+                      [Track("A1", "Hot Stuff", 20, "", 1), Track("A2", "Bad Girls", 19, "", 2),
+                       Track("A3", "Love Will Always Find You", 24, "", 3)], "", "")
+win.riplog.forget(103)
+win._use_release()
+wav = out / win._recording_path("A").name
+sf.write(wav, side, SR, subtype="PCM_24")
+rec = win._add_recording(wav, "A")
+assert pump(10, lambda: rec.env is not None)
+win.format_combo.setCurrentIndex(win.format_combo.findData("aiff"))
+print("save buttons:", repr(win.save_btn.text()), "|", repr(win.save_next_btn.text()))
+dialog.clear()
+win._save_all(then_next=True)
+print("straight away: tab", win.tabs.currentIndex() == TAB_ALBUM and "Album", "| recordings cleared:",
+      win.recordings == [], "| selected:", win.coll_list.currentItem().text().split("\n")[0])
+assert pump(30, lambda: not win._saving), "background save never finished"
+pump(0.3)
+print("background save:", win.riplog.describe(103), "| window shown:", bool(dialog),
+      "| status:", win.statusBar().currentMessage()[:60])
+saved_aiff = sorted(p.name for p in (out / "music").rglob("*.aiff"))
+print("AIFF files:", saved_aiff)
+assert saved_aiff and not dialog
 win.recorder.close()
 win.close()

@@ -43,10 +43,12 @@ HOW IT WORKS
 
 1. Album:  pick the record from your collection (or search Discogs).
 2. Record: press Record and drop the needle. Hands-free (on by default) starts when the
-   music does, pauses at the end of each side (it beeps: flip the record), and stops by
+   music does, pauses when you lift the needle at the end of a side, and stops by
    itself after the last side. "Whole LP" records every side in one take.
 3. Split & save: tracks are found automatically. Scroll to zoom, drag lines to adjust,
-   Space to play/stop. Choose FLAC and/or MP3, then Save.
+   Space to play/stop. Choose the format (MP3, FLAC, WAV or AIFF: MP3, WAV and AIFF
+   play on every CDJ), then Save. "Save and start next album" saves in the background
+   while you get the next record going.
    Wrong tracklist, or played side B first? Use "Edit tracklist..." or "played: B -> A".
 4. Labels: print sleeve labels (Avery 4x2 / 4x3 sheets or 4" thermal rolls). Every saved
    album is queued, so you can print a whole sheet at once.
@@ -56,3 +58,10 @@ Preferences > Advanced > Database > rekordbox xml, choose that file once.
 
 Music is saved to Music/Vinyl Rips (change it in File > Settings).
 Raw recordings are kept in Music/Vinyl Rips/_recordings - delete them when you're happy.
+
+
+UPDATES
+
+The app tells you when a new version is out (or use Help > Check for updates).
+Download it, close the app and unzip it over this folder (Mac: drag the new app into
+Applications and choose Replace). Your settings and history are kept.

@@ -1,4 +1,4 @@
-"""Cut tracks out of a recorded side and save them as tagged FLAC and/or MP3 files."""
+"""Cut tracks out of a recorded side and save them as tagged FLAC, MP3, WAV or AIFF files."""
 
 import re
 from dataclasses import dataclass, field
@@ -9,8 +9,11 @@ import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC, Picture
 from mutagen.id3 import APIC, ID3, TALB, TBPM, TCON, TDRC, TIT2, TLEN, TPE1, TPE2, TPUB, TRCK, TXXX
+from mutagen import File as MutagenFile
 from mutagen import MutagenError
+from mutagen.aiff import AIFF
 from mutagen.mp3 import MP3
+from mutagen.wave import WAVE
 from scipy.signal import resample_poly
 
 from . import loudness, naming
@@ -18,8 +21,20 @@ from .discogs import Release, Track
 from .tempo import DEFAULT_LOW_BPM, estimate_bpm
 
 FADE_SECONDS = 0.01  # tiny fade at each cut so it doesn't click
-FORMATS = {"flac": "FLAC (lossless)", "mp3": "MP3 320 kbps", "both": "FLAC + MP3"}
+# What the Save button offers. CDJs: every Pioneer CDJ plays MP3 and 16-bit WAV/AIFF;
+# FLAC needs a CDJ-2000NXS2, CDJ-3000 or a recent XDJ.
+FORMATS = {
+    "flac": "FLAC: lossless, full quality (CDJ-2000NXS2, CDJ-3000, XDJ)",
+    "mp3": "MP3 320 kbps (plays on every CDJ)",
+    "wav": "WAV 16-bit / 44.1 kHz: CD quality (every CDJ)",
+    "aiff": "AIFF 16-bit / 44.1 kHz: CD quality (every CDJ)",
+    "both": "FLAC + MP3",
+}
+SHORT_NAMES = {"flac": "FLAC", "mp3": "MP3", "wav": "WAV", "aiff": "AIFF", "both": "FLAC + MP3"}
+EXTENSIONS = {"flac": "flac", "mp3": "mp3", "wav": "wav", "aiff": "aiff"}
+AUDIO_SUFFIXES = (".flac", ".mp3", ".wav", ".aiff", ".aif")
 MP3_MAX_RATE = 48000
+CD_RATE = 44100
 
 
 def safe_filename(name: str) -> str:
@@ -99,11 +114,11 @@ def write_replaygain(saved: list[SavedTrack]) -> float | None:
                 for k, v in values.items():
                     f[k] = v
                 f.save()
-            else:
-                tags_ = ID3(path)
+            else:  # ID3: MP3, and the ID3 chunk of WAV/AIFF
+                f = MutagenFile(path)
                 for k, v in values.items():
-                    tags_.add(TXXX(encoding=3, desc=k, text=v))
-                tags_.save(v2_version=3)
+                    f.tags.add(TXXX(encoding=3, desc=k, text=v))
+                f.save(v2_version=3)
     return album_gain
 
 
@@ -114,6 +129,7 @@ def export_side(recording: Path, cuts: list[TrackCut], release: Release, output_
     gain_db changes the volume of everything (normalizing). Call write_replaygain() on the result
     of all sides afterwards for the loudness tags."""
     want_flac, want_mp3 = fmt in ("flac", "both"), fmt in ("mp3", "both")
+    cd_format = fmt if fmt in ("wav", "aiff") else None
     saved, folders = [], set()
     with sf.SoundFile(recording) as src:
         sr = src.samplerate
@@ -142,6 +158,12 @@ def export_side(recording: Path, cuts: list[TrackCut], release: Release, output_
                 path.parent.mkdir(parents=True, exist_ok=True)
                 write_mp3(path, data, sr)
                 tag_mp3(path, t, release, result)
+                result.files.append(path)
+            if cd_format:
+                path = naming.track_path(output_dir, release, t, EXTENSIONS[cd_format], pattern, result.bpm)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                write_cd_quality(path, data, sr, cd_format)
+                tag_id3_file(path, t, release, result)
                 result.files.append(path)
             folders |= {p.parent for p in result.files}
             saved.append(result)
@@ -176,6 +198,18 @@ def write_mp3(path: Path, data: np.ndarray, sr: int) -> None:
     # compression_level 0 = highest bitrate, i.e. 320 kbps constant
     sf.write(path, data, rate, format="MP3", subtype="MPEG_LAYER_III", bitrate_mode="CONSTANT",
              compression_level=0.0)
+
+
+def write_cd_quality(path: Path, data: np.ndarray, sr: int, fmt: str) -> None:
+    """16-bit / 44.1 kHz WAV or AIFF, which every CDJ plays. Dithered, so quiet fades stay smooth."""
+    if sr != CD_RATE:
+        g = gcd(CD_RATE, sr)
+        data = resample_poly(data, CD_RATE // g, sr // g, axis=0).astype(np.float32)
+    lsb = 1 / 32768
+    rng = np.random.default_rng(0)
+    data = data + ((rng.random(data.shape) - rng.random(data.shape)) * lsb).astype(np.float32)  # TPDF dither
+    np.clip(data, -1.0, 1.0 - lsb, out=data)
+    sf.write(path, data, CD_RATE, subtype="PCM_16", format="WAV" if fmt == "wav" else "AIFF")
 
 
 def _bpm_text(bpm: float | None) -> str | None:
@@ -220,7 +254,21 @@ def tag_mp3(path: Path, track: Track, release: Release, info: SavedTrack) -> Non
     f = MP3(path, ID3=ID3)
     if f.tags is None:
         f.add_tags()
-    tags = f.tags
+    _id3_tags(f.tags, track, release, info)
+    # ID3v2.3 is what Windows Explorer, Rekordbox and Serato read most reliably
+    f.save(v2_version=3)
+
+
+def tag_id3_file(path: Path, track: Track, release: Release, info: SavedTrack) -> None:
+    """The same tags as an MP3, in the ID3 chunk of a WAV or AIFF file (Rekordbox and Serato read it)."""
+    f = WAVE(path) if path.suffix.lower() == ".wav" else AIFF(path)
+    if f.tags is None:
+        f.add_tags()
+    _id3_tags(f.tags, track, release, info)
+    f.save(v2_version=3)
+
+
+def _id3_tags(tags: ID3, track: Track, release: Release, info: SavedTrack) -> None:
     tags.add(TIT2(encoding=3, text=track.title))
     tags.add(TPE1(encoding=3, text=track.artist or release.artist))
     tags.add(TPE2(encoding=3, text=release.artist))
@@ -242,8 +290,6 @@ def tag_mp3(path: Path, track: Track, release: Release, info: SavedTrack) -> Non
             tags.add(TXXX(encoding=3, desc=desc, text=value))
     if release.cover:
         tags.add(APIC(encoding=3, mime=_mime(release.cover), type=3, desc="Cover", data=release.cover))
-    # ID3v2.3 is what Windows Explorer, Rekordbox and Serato read most reliably
-    f.save(v2_version=3)
 
 
 def read_saved(output_dir: Path, release: Release,
@@ -262,9 +308,9 @@ def read_saved(output_dir: Path, release: Release,
                 if path.suffix.lower() == ".flac":
                     f = FLAC(path)
                     number, bpm = f.get("TRACKNUMBER", [""])[0], f.get("BPM", [""])[0]
-                elif path.suffix.lower() == ".mp3":
-                    f = MP3(path, ID3=ID3)
-                    tags = f.tags or {}
+                elif path.suffix.lower() in AUDIO_SUFFIXES:
+                    f = MutagenFile(path)
+                    tags = (f.tags if f is not None else None) or {}
                     number = str(tags["TRCK"].text[0]) if "TRCK" in tags else ""
                     bpm = str(tags["TBPM"].text[0]) if "TBPM" in tags else ""
                 else:

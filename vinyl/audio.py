@@ -8,6 +8,7 @@ os.environ.setdefault("SD_ENABLE_ASIO", "1")
 import collections
 import functools
 import queue
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -95,7 +96,10 @@ LEVEL_BLOCK = 0.1  # seconds per level reading
 SOUND_DB = -45.0  # a needle drop or music: louder than this (rumble filtered out)...
 SOUND_BLOCKS = (3, 5)  # ...in 3 of the last 5 readings (run-out clicks are too short to count)
 PREROLL = 2.0  # seconds kept from just before the sound started
-RUNOUT_SECONDS = 6.0  # this long without music ends a side (gaps between tracks are shorter)
+RUNOUT_SECONDS = 6.0  # this long without music might be the run-out groove (or a long gap, a quiet intro)...
+NEEDLE_UP_DB = -68.0  # ...so the side only ends once the needle is lifted (quieter than any groove noise)...
+NEEDLE_UP_SECONDS = 0.5  # ...for this long,
+RUNOUT_MAX_SECONDS = 20.0  # or when it's been quiet this long (the run-out left spinning)
 QUIET_BELOW_MUSIC_DB = 35.0  # "without music": this far below the loudest second so far...
 QUIET_MAX_DB = -40.0  # ...and never louder than this
 MONO_SECONDS = 4.0  # recent input kept for the live hum check
@@ -108,9 +112,11 @@ class Recorder:
     While recording, the time of each clip is kept so it can be marked on the waveform.
 
     Hands-free mode (start(..., hands_free=True)): the take waits for the needle drop and
-    begins with the PREROLL seconds before it; when a side runs into its run-out groove it
-    pauses, notes the side break, and re-arms for the next side (so the flip isn't recorded);
-    after the last side it finishes on its own. `state` and `event` tell the UI what happened.
+    begins with the PREROLL seconds before it. When the music stops for RUNOUT_SECONDS it keeps
+    recording (it may only be a long gap or a quiet intro) until the needle is lifted, or until
+    it has been quiet for RUNOUT_MAX_SECONDS; then it pauses, notes the side break, and re-arms for
+    the next side (so the flip isn't recorded). After the last side it finishes on its own.
+    `state`, `ending` and `event` tell the UI what's happening.
     """
 
     def __init__(self):
@@ -124,6 +130,8 @@ class Recorder:
         self.event: str | None = None  # "finished" when hands-free mode recorded the last side
         self.sides_target: int | None = None
         self.sides_done = 0
+        self.ending = False  # hands-free: quiet long enough to be the run-out; waiting for the needle to lift
+        self._quiet_blocks = 0
         self.side_breaks: list[float] = []  # seconds into the file where a side ended
         self._mono = np.zeros(1, dtype=np.float32)  # sized properly when the input opens
         self._mono_pos = 0
@@ -272,13 +280,16 @@ class Recorder:
     def _track_levels(self, data: np.ndarray) -> bool:
         """Update the state machine. Returns True if writing (re)started on this block."""
         hp, self._zi = sosfilt(self._sos, data.mean(axis=1), zi=self._zi)
-        self._acc += float(np.sum(hp ** 2))
-        self._acc_n += len(hp)
-        started = False
-        while self._acc_n >= self._block_n:
-            db = 10 * np.log10(self._acc / self._acc_n + 1e-14)
-            self._acc, self._acc_n = 0.0, 0
-            started |= self._on_level(db)
+        started, pos = False, 0
+        while pos < len(hp):  # exact LEVEL_BLOCK readings, whatever size PortAudio's buffers are
+            take = min(self._block_n - self._acc_n, len(hp) - pos)
+            self._acc += float(np.sum(hp[pos:pos + take] ** 2))
+            self._acc_n += take
+            pos += take
+            if self._acc_n >= self._block_n:
+                db = 10 * np.log10(self._acc / self._acc_n + 1e-14)
+                self._acc, self._acc_n = 0.0, 0
+                started |= self._on_level(db)
         return started
 
     def _on_level(self, db: float) -> bool:
@@ -297,8 +308,15 @@ class Recorder:
             quiet = min(QUIET_MAX_DB, self._music_db - QUIET_BELOW_MUSIC_DB)
             levels = np.array(self._levels)
             # Median, so the once-per-turn click of a run-out groove doesn't keep the side going
-            if len(levels) == self._levels.maxlen and np.median(levels) < quiet and np.mean(levels > quiet) < 0.2:
-                self._writing = False
+            self.ending = (len(levels) == self._levels.maxlen and np.median(levels) < quiet
+                           and np.mean(levels > quiet) < 0.2)
+            self._quiet_blocks = self._quiet_blocks + 1 if self.ending else 0
+            lifted = levels[-int(NEEDLE_UP_SECONDS / LEVEL_BLOCK):]
+            needle_up = np.mean(lifted < NEEDLE_UP_DB) >= 0.8
+            long_quiet = self._quiet_blocks * LEVEL_BLOCK >= RUNOUT_MAX_SECONDS - RUNOUT_SECONDS
+            if self.ending and (needle_up or long_quiet):
+                self._writing = self.ending = False
+                self._quiet_blocks = 0
                 self.side_breaks.append(self._rec_frames / self.samplerate)
                 self.sides_done += 1
                 self._recent.clear()
@@ -345,6 +363,7 @@ class Recorder:
         self.reset_clips()
         self.hands_free, self.sides_target, self.sides_done = hands_free, sides, 0
         self.side_breaks, self.event = [], None
+        self.ending, self._quiet_blocks = False, 0
         if hands_free:
             self._prepare_detection(self.samplerate)
         self.state = ARMED if hands_free else RECORDING
@@ -352,6 +371,10 @@ class Recorder:
         self._queue = queue.Queue()
         self._writer = threading.Thread(target=self._write_loop, daemon=True)
         self._writer.start()
+        # Hand the GIL over more often, so a save running in the background can't make the audio
+        # callback wait long enough to drop samples
+        self._switch_interval = sys.getswitchinterval()
+        sys.setswitchinterval(0.001)
         self._recording = True
 
     def _write_loop(self):
@@ -370,6 +393,7 @@ class Recorder:
         self._writer.join()
         self._file.close()
         self._file = None
+        sys.setswitchinterval(self._switch_interval)
         return self.path
 
     @property

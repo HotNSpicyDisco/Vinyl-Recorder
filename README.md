@@ -33,18 +33,20 @@ When it asks to use the microphone, click **OK**. That's how it records your aud
    Search Discogs for anything that isn't in your collection.
 2. **Record**: pick your audio interface and inputs, set levels with the meters and clip
    counter, and press Record. **Hands-free** (on by default) waits for the needle to drop,
-   pauses when a side reaches its run-out groove (with a beep to tell you to flip), carries on
-   when the needle drops on the next side, and stops by itself after the last side. **Whole
+   pauses when you lift the needle at the end of a side (or after 20 s of run-out groove, with
+   a beep to tell you to flip), carries on when the needle drops on the next side, and stops by
+   itself after the last side. Long gaps and quiet intros keep recording. **Whole
    LP** records every side in one take; double LPs can be recorded a disc at a time. A **hum
    warning** tells you if the turntable's ground wire needs connecting.
 3. **Split & save**: tracks are found automatically using the Discogs track lengths. Each
    track starts on its first beat and keeps its full fade-out, and needle drops, lead-in
    rumble, crackle and run-out groove are left out. Zoom in with the scroll wheel to check, drag
-   lines to adjust, and press Space to play or stop. Save as FLAC, MP3 320 or both, tagged
-   with title, artists, album, year, label, catalogue number, cover art, length, BPM and
+   lines to adjust, and press Space to play or stop. Save as FLAC, MP3 320, WAV or AIFF
+   (16-bit / 44.1 kHz, which every CDJ plays), or FLAC + MP3, tagged with title, artists, album, year, label, catalogue number, cover art, length, BPM and
    ReplayGain loudness. Tick **Normalize volume** to bring each album's loudest moment to -1 dB
    (a pure volume change, nothing else). File and folder names follow a pattern you can change
-   in Settings.
+   in Settings. **Save and start next album** saves in the background and takes you straight to
+   the next record, so you can pick it, check levels and start recording while it saves.
 4. **Labels**: print sleeve labels with the tracklist, lengths and BPMs on Avery sheets or a
    thermal label printer, for the records you've saved or any record in your collection.
 
@@ -118,7 +120,15 @@ stored only on your computer:
 - Windows: `%APPDATA%\VinylRecorder`
 - macOS: `~/Library/Application Support/VinylRecorder`
 
-The app only talks to Discogs (api.discogs.com and its image server).
+The app only talks to Discogs (api.discogs.com and its image server) and, once a day, to GitHub
+to see if there's a newer version (turn that off in **File → Settings**).
+
+## Updates
+
+When a new version is out, the app tells you when it starts (or use **Help → Check for
+updates…**). Click **Download**, close the app and unzip the new version over the old folder (on
+a Mac, drag the new app into Applications and choose **Replace**). Your settings, collection, rip
+log and label queue live elsewhere and are kept.
 
 ## Running from source
 
@@ -170,6 +180,7 @@ python tools/make_icon.py                       # redraws the icons (needs Pillo
 | `vinyl/tracklist.py` | matching parts to tracks (side order, your track picks) |
 | `vinyl/labels.py` | label templates, layout, printing and PDF |
 | `vinyl/rekordbox.py` | the Rekordbox XML library |
+| `vinyl/updates.py` | checking GitHub for a newer release |
 | `vinyl/library.py` | the local rip log, collection cache, tracklist corrections and label queue |
 | `vinyl/ui/` | the window |
 

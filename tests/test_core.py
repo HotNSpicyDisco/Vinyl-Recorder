@@ -1,6 +1,7 @@
 """Splitting and export, checked against a synthetic side with known track boundaries."""
 
 import numpy as np
+import pytest
 import soundfile as sf
 from mutagen.flac import FLAC
 
@@ -356,3 +357,29 @@ def test_discogs_helpers():
     assert parse_duration("") is None
     artists = [{"name": "Chic (2)", "join": "Feat."}, {"name": "Nile Rodgers", "join": ","}, {"name": "X"}]
     assert join_artists(artists) == "Chic Feat. Nile Rodgers, X"
+
+
+def test_export_cd_quality_wav_and_aiff(tmp_path):
+    """WAV and AIFF for CDJs: 16-bit / 44.1 kHz with ID3 tags that Rekordbox reads."""
+    from vinyl import rekordbox
+    from vinyl.export import read_saved, write_replaygain
+
+    wav = tmp_path / "side.wav"
+    rng = np.random.default_rng(0)
+    sf.write(wav, (0.3 * rng.standard_normal((96000 * 6, 2))).astype(np.float32), 96000, subtype="PCM_24")
+    release = Release(id=9, artist="CDJ", title="Club", year="1988", genres=["Electronic"], styles=["House"],
+                      label="L", catno="C9", tracks=[Track("A1", "Jack", 5, "", 1)], cover_url="", url="",
+                      cover=b"\xff\xd8\xff fake jpeg")
+    for fmt in ("wav", "aiff"):
+        out = tmp_path / fmt
+        saved = export_side(wav, [TrackCut(release.tracks[0], 0.5, 5.5)], release, out, fmt=fmt, detect_bpm=False)
+        write_replaygain(saved)
+        path = saved[0].files[0]
+        assert path.suffix == f".{fmt}"
+        info = sf.info(path)
+        assert (info.samplerate, info.subtype) == (44100, "PCM_16") and abs(info.duration - 5) < 0.01
+        track = rekordbox.read_track(path)
+        assert (track.title, track.artist, track.album, track.number) == ("Jack", "CDJ", "Club", 1)
+        assert track.position == "A1"
+        assert read_saved(out, release)[1][1] == pytest.approx(5, abs=0.01)
+        assert len(rekordbox.album_tracks(path.parent)) == 1

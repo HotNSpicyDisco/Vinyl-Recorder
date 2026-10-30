@@ -18,8 +18,10 @@ from mutagen import File as MutagenFile
 from mutagen import MutagenError
 
 from . import __version__
+from .export import AUDIO_SUFFIXES
 
 FOLDER = "Vinyl Recorder"
+KINDS = {".flac": "FLAC File", ".mp3": "MP3 File", ".wav": "WAV File", ".aiff": "AIFF File", ".aif": "AIFF File"}
 
 
 @dataclass
@@ -105,7 +107,7 @@ def read_track(path: Path) -> TrackInfo | None:
 
 
 def album_tracks(folder: Path) -> list[TrackInfo]:
-    tracks = [read_track(p) for p in sorted(folder.iterdir()) if p.suffix.lower() in (".flac", ".mp3")]
+    tracks = [read_track(p) for p in sorted(folder.iterdir()) if p.suffix.lower() in AUDIO_SUFFIXES]
     return sorted((t for t in tracks if t), key=lambda t: (t.number, t.path.name))
 
 
@@ -142,7 +144,7 @@ class Library:
             el = ET.SubElement(self.collection, "TRACK", TrackID=str(self._next_id()), Location=loc,
                                DateAdded=date.today().isoformat(), PlayCount="0", Rating="0")
             self.by_location[loc] = el
-        kind = "FLAC File" if info.path.suffix.lower() == ".flac" else "MP3 File"
+        kind = KINDS.get(info.path.suffix.lower(), "MP3 File")
         attrs = {
             "Name": info.title, "Artist": info.artist, "Album": info.album, "Genre": info.genre,
             "Label": info.label, "Year": info.year, "TrackNumber": str(info.number), "Kind": kind,
@@ -226,6 +228,6 @@ def all_album_folders(output_dir: Path) -> list[Path]:
     """Every folder under the output folder that holds saved tracks (raw recordings excluded)."""
     folders = set()
     for p in output_dir.rglob("*"):
-        if p.suffix.lower() in (".flac", ".mp3") and "_recordings" not in p.parts:
+        if p.suffix.lower() in AUDIO_SUFFIXES and "_recordings" not in p.parts:
             folders.add(p.parent)
     return sorted(folders)
