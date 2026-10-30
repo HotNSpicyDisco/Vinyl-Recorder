@@ -181,6 +181,9 @@ class SettingsDialog(QDialog):
         self.queue_labels.setToolTip("Print them all at once with File → Print label queue…")
         self.queue_labels.setChecked(settings.queue_labels)
         form.addRow("Labels:", self.queue_labels)
+        self.skip_lps = QCheckBox("…except LPs (and hide LPs on the Labels tab)")
+        self.skip_lps.setChecked(settings.labels_skip_lps)
+        form.addRow("", self.skip_lps)
 
         self.rekordbox = QCheckBox("Add saved albums to rekordbox.xml (in the save folder)")
         self.rekordbox.setChecked(settings.rekordbox)
@@ -241,6 +244,7 @@ class SettingsDialog(QDialog):
         self.settings.detect_bpm = self.detect_bpm.isChecked()
         self.settings.bpm_low = self.bpm_range.currentData()
         self.settings.queue_labels = self.queue_labels.isChecked()
+        self.settings.labels_skip_lps = self.skip_lps.isChecked()
         self.settings.rekordbox = self.rekordbox.isChecked()
         self.settings.rekordbox_prefer = self.rekordbox_prefer.currentData()
         self.settings.check_updates = self.check_updates.isChecked()
@@ -1949,7 +1953,7 @@ class MainWindow(QMainWindow):
                 rec.release_id = release.id
             self.riplog.mark_saved(release, fmt, folder, sides)
             self._refresh_marks()
-            if self.settings.queue_labels:
+            if self.settings.queue_labels and not (self.settings.labels_skip_lps and self._is_lp(release.id)):
                 self.label_queue.add(labels.to_dict(self._label_for(release)[0]))
             if self.settings.rekordbox:
                 try:
@@ -2027,6 +2031,10 @@ class MainWindow(QMainWindow):
                 "albums appear under \"rekordbox xml\" → Playlists → Vinyl Recorder: right-click to import.")
 
         self.run_bg(lambda: rekordbox.add_folders(xml, rekordbox.all_album_folders(out), prefer), done)
+
+    def _is_lp(self, release_id: int) -> bool:
+        """Whether your collection lists this record as an LP (unknown records count as not)."""
+        return any(i.id == release_id and i.is_lp for i in self.collection.items)
 
     def _label_for(self, release: discogs.Release) -> tuple[labels.LabelData, bool]:
         """A record's label, with the lengths and BPMs measured from its saved tracks (and whether any were)."""

@@ -64,6 +64,11 @@ class CollectionItem:
     def is_vinyl(self) -> bool:
         return "Vinyl" in self.formats
 
+    @property
+    def is_lp(self) -> bool:
+        """An album-length LP (Discogs says "LP"), as opposed to a 12", EP or single."""
+        return "LP" in self.formats
+
     def matches(self, text: str) -> bool:
         hay = f"{self.artist} {self.title} {self.label} {self.catno} {self.year}".lower()
         return all(word in hay for word in text.lower().split())

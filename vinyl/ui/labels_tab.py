@@ -41,6 +41,12 @@ class LabelsTab(QWidget):
         self.vinyl_only.setChecked(True)
         self.vinyl_only.toggled.connect(self.fill_collection)
         row.addWidget(self.vinyl_only)
+        self.hide_lps = QCheckBox("Hide LPs")
+        self.hide_lps.setToolTip("Most DJs only label the 12\"s, EPs and singles they play out. With this on, LPs "
+                                 "are hidden here and saved LPs aren't added to the label queue.")
+        self.hide_lps.setChecked(host.settings.labels_skip_lps)
+        self.hide_lps.toggled.connect(self._hide_lps_toggled)
+        row.addWidget(self.hide_lps)
         v.addLayout(row)
         self.coll = QListWidget()
         self.coll.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -108,6 +114,9 @@ class LabelsTab(QWidget):
 
     def refresh(self):
         """Re-read the queue and collection (another window may have changed them)."""
+        self.hide_lps.blockSignals(True)
+        self.hide_lps.setChecked(self.host.settings.labels_skip_lps)  # may have changed in Settings
+        self.hide_lps.blockSignals(False)
         self.fill_collection()
         self.fill_sheet()
         self.add_current_btn.setEnabled(self.host.release is not None)
@@ -167,7 +176,8 @@ class LabelsTab(QWidget):
         h = self.host
         text = self.filter.text().strip()
         items = [i for i in h.collection.items
-                 if (not text or i.matches(text)) and (not self.vinyl_only.isChecked() or i.is_vinyl)]
+                 if (not text or i.matches(text)) and (not self.vinyl_only.isChecked() or i.is_vinyl)
+                 and not (self.hide_lps.isChecked() and i.is_lp)]
         items.sort(key=lambda i: (i.artist.lower().removeprefix("the "), i.year, i.title.lower()))
         on_sheet = {d.get("release_id") for d in self.queue.items}
         self.coll.clear()
@@ -188,6 +198,11 @@ class LabelsTab(QWidget):
         elif not self._adding:
             self.pick_info.setText(f"{len(items)} records. Saved albums print with their measured lengths "
                                    "and BPMs.")
+
+    def _hide_lps_toggled(self, on: bool):
+        self.host.settings.labels_skip_lps = on
+        self.host.settings.save()
+        self.fill_collection()
 
     def add_selected(self):
         ids = [i.data(Qt.ItemDataRole.UserRole) for i in self.coll.selectedItems()]

@@ -107,3 +107,11 @@ def test_collection_cache_roundtrip(tmp_path: Path):
     cache.save("me", [item])
     back = library.CollectionCache(tmp_path / "c.json")
     assert back.username == "me" and back.items == [item] and back.updated
+
+
+def test_lp_or_not():
+    from vinyl.discogs import CollectionItem
+
+    lp = CollectionItem(1, "A", "Album", "1980", "L", "C", ["Vinyl", "LP", "Album"], "", "")
+    twelve = CollectionItem(2, "A", "Single", "1980", "L", "C", ["Vinyl", '12"', "33 ⅓ RPM"], "", "")
+    assert lp.is_lp and not twelve.is_lp

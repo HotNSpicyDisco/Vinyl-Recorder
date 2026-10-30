@@ -80,7 +80,8 @@ The **4. Labels** tab makes labels on their own, no recording needed: pick recor
 Discogs collection (several at once), add the album you're ripping or type one in by hand, arrange
 them on the sheet, flip through the sheets in the preview, and print. Every saved album is also
 added to that sheet (the label queue) automatically, so a whole sheet of different records
-prints at once. On sheets, **Start at label** uses up a partly used sheet. Tick **QR code** for a small code linking to the record's Discogs page. Print
+prints at once. LPs are left out (DJs rarely play them out): untick **Hide LPs** to label them
+too. On sheets, **Start at label** uses up a partly used sheet. Tick **QR code** for a small code linking to the record's Discogs page. Print
 at 100% / Actual size. For thermal printers, set the label size in the printer's driver. If the
 label comes out sideways, tick **Turn 90°**. The layout comes from the Discogs Label Maker app.
 
