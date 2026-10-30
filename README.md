@@ -45,6 +45,8 @@ When it asks to use the microphone, click **OK**. That's how it records your aud
    ReplayGain loudness. Tick **Normalize volume** to bring each album's loudest moment to -1 dB
    (a pure volume change, nothing else). File and folder names follow a pattern you can change
    in Settings.
+4. **Labels**: print sleeve labels with the tracklist, lengths and BPMs on Avery sheets or a
+   thermal label printer, for the records you've saved or any record in your collection.
 
 ### Rekordbox
 
@@ -75,10 +77,12 @@ or saves a PDF.
 The **4. Labels** tab makes labels on their own, no recording needed: pick records from your
 Discogs collection (several at once), add the album you're ripping or type one in by hand, arrange
 them on the sheet, flip through the sheets in the preview, and print. Every saved album is also
-added to that sheet (the label queue) automatically, so a whole sheet of different records prints at once. On sheets, **Start at label** uses up a
-partly used sheet. Tick **QR code** for a small code linking to the record's Discogs page. Print
+added to that sheet (the label queue) automatically, so a whole sheet of different records
+prints at once. On sheets, **Start at label** uses up a partly used sheet. Tick **QR code** for a small code linking to the record's Discogs page. Print
 at 100% / Actual size. For thermal printers, set the label size in the printer's driver. If the
 label comes out sideways, tick **Turn 90°**. The layout comes from the Discogs Label Maker app.
+
+![The Labels tab: pick records, arrange the sheet, print](docs/labels.png)
 
 ### When the record doesn't match Discogs
 
@@ -160,7 +164,13 @@ python tools/make_icon.py                       # redraws the icons (needs Pillo
 | `vinyl/tempo.py` | BPM detection |
 | `vinyl/discogs.py` | Discogs search, releases and collection |
 | `vinyl/export.py` | cutting tracks, FLAC/MP3 writing and tagging |
-| `vinyl/library.py` | the local rip log and collection cache |
+| `vinyl/naming.py` | file and folder name patterns |
+| `vinyl/loudness.py` | loudness (BS.1770), ReplayGain and normalizing |
+| `vinyl/hum.py` | ground-hum detection |
+| `vinyl/tracklist.py` | matching parts to tracks (side order, your track picks) |
+| `vinyl/labels.py` | label templates, layout, printing and PDF |
+| `vinyl/rekordbox.py` | the Rekordbox XML library |
+| `vinyl/library.py` | the local rip log, collection cache, tracklist corrections and label queue |
 | `vinyl/ui/` | the window |
 
 ## License

@@ -42,9 +42,17 @@ SET UP YOUR AUDIO (Record tab)
 HOW IT WORKS
 
 1. Album:  pick the record from your collection (or search Discogs).
-2. Record: "Whole LP" records side A, the flip, and side B in one go. Press Stop at the end.
+2. Record: press Record and drop the needle. Hands-free (on by default) starts when the
+   music does, pauses at the end of each side (it beeps: flip the record), and stops by
+   itself after the last side. "Whole LP" records every side in one take.
 3. Split & save: tracks are found automatically. Scroll to zoom, drag lines to adjust,
    Space to play/stop. Choose FLAC and/or MP3, then Save.
+   Wrong tracklist, or played side B first? Use "Edit tracklist..." or "played: B -> A".
+4. Labels: print sleeve labels (Avery 4x2 / 4x3 sheets or 4" thermal rolls). Every saved
+   album is queued, so you can print a whole sheet at once.
+
+Saved albums are also added to rekordbox.xml in your save folder. In Rekordbox:
+Preferences > Advanced > Database > rekordbox xml, choose that file once.
 
 Music is saved to Music/Vinyl Rips (change it in File > Settings).
 Raw recordings are kept in Music/Vinyl Rips/_recordings - delete them when you're happy.
