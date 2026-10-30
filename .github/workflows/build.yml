@@ -20,7 +20,7 @@ jobs:
         include:
           - os: windows-latest
             artifact: Vinyl-Recorder-windows.zip
-          - os: macos-14  # Apple Silicon (M1 and later)
+          - os: macos-15  # Apple Silicon (M1 and later)
             artifact: Vinyl-Recorder-mac-apple-silicon.zip
           - os: macos-15-intel  # Intel Macs
             artifact: Vinyl-Recorder-mac-intel.zip
