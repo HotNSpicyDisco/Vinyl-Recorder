@@ -5,6 +5,7 @@ import shutil
 import string
 import sys
 import traceback
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .. import audio, discogs, export, library, shortcuts, splitter, tempo, tracklist
+from .. import audio, discogs, export, library, rekordbox, shortcuts, splitter, tempo, tracklist
 from ..settings import Settings
 from .print_labels import PrintLabelsDialog
 from .tracklist_editor import TracklistEditor
@@ -150,6 +151,20 @@ class SettingsDialog(QDialog):
                                   "disco, funk and house; use 88–175 for faster music like drum & bass.")
         form.addRow("BPM range:", self.bpm_range)
 
+        self.rekordbox = QCheckBox("Add saved albums to a Rekordbox library (rekordbox.xml in the save folder)")
+        self.rekordbox.setChecked(settings.rekordbox)
+        form.addRow("Rekordbox:", self.rekordbox)
+        self.rekordbox_prefer = QComboBox()
+        self.rekordbox_prefer.addItem("FLAC", "flac")
+        self.rekordbox_prefer.addItem("MP3 (for older CDJs that can't play FLAC)", "mp3")
+        self.rekordbox_prefer.setCurrentIndex(max(0, self.rekordbox_prefer.findData(settings.rekordbox_prefer)))
+        form.addRow("When saving both, use:", self.rekordbox_prefer)
+        how = QLabel("In Rekordbox: Preferences → Advanced → Database → rekordbox xml → Imported Library, choose "
+                     "the file once. Your albums then appear under <i>rekordbox xml</i> in the sidebar.")
+        how.setWordWrap(True)
+        how.setStyleSheet("color: gray;")
+        form.addRow("", how)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -168,6 +183,8 @@ class SettingsDialog(QDialog):
         self.settings.min_gap_seconds = self.min_gap.value()
         self.settings.detect_bpm = self.detect_bpm.isChecked()
         self.settings.bpm_low = self.bpm_range.currentData()
+        self.settings.rekordbox = self.rekordbox.isChecked()
+        self.settings.rekordbox_prefer = self.rekordbox_prefer.currentData()
         self.settings.save()
         super().accept()
 
@@ -232,6 +249,9 @@ class MainWindow(QMainWindow):
         m = self.menuBar().addMenu("&File")
         act = QAction("Open recording (WAV/FLAC)…", self)
         act.triggered.connect(self._open_recording)
+        m.addAction(act)
+        act = QAction("Add all saved albums to Rekordbox", self)
+        act.triggered.connect(self._rekordbox_all)
         m.addAction(act)
         act = QAction("Open output folder", self)
         act.triggered.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self.settings.output_dir)))
@@ -1727,6 +1747,13 @@ class MainWindow(QMainWindow):
                 rec.release_id = release.id
             self.riplog.mark_saved(release, fmt, folder, sides)
             self._refresh_marks()
+            if self.settings.rekordbox:
+                try:
+                    rekordbox.add_folders(self.settings.rekordbox_xml,
+                                          [folder, export.album_folder(out, release, mp3_subfolder=True)],
+                                          self.settings.rekordbox_prefer)
+                except (OSError, ET.ParseError) as e:
+                    self._status(f"Couldn't update the Rekordbox library: {e}", 0)
             self._status(f"Saved {len(saved)} tracks to {folder}", 0)
             lines = [f"{s.track.position}  {s.track.title}  ·  {fmt_time(s.length)[:-2]}"
                      + (f"  ·  {s.bpm:g} BPM" if s.bpm else ("  ·  BPM not found" if detect else ""))
@@ -1764,6 +1791,20 @@ class MainWindow(QMainWindow):
         if nxt and clicked is nxt:
             return "next"
         return "print" if clicked is prt else "open" if clicked is opn else "close"
+
+    def _rekordbox_all(self):
+        out, xml, prefer = Path(self.settings.output_dir), self.settings.rekordbox_xml, self.settings.rekordbox_prefer
+        self._status("Adding your saved albums to the Rekordbox library…", 0)
+
+        def done(n):
+            self._status(f"{n} albums in {xml}", 0)
+            QMessageBox.information(
+                self, "Rekordbox",
+                f"{n} albums are in the Rekordbox library:\n{xml}\n\nIn Rekordbox: Preferences → Advanced → "
+                "Database → rekordbox xml → Imported Library, and choose that file (only needed once). The "
+                "albums appear under \"rekordbox xml\" → Playlists → Vinyl Recorder: right-click to import.")
+
+        self.run_bg(lambda: rekordbox.add_folders(xml, rekordbox.all_album_folders(out), prefer), done)
 
     def _print_labels(self, release: discogs.Release | None):
         """Label printing for a record, with the lengths and BPMs measured from its saved tracks."""

@@ -41,6 +41,8 @@ class Settings:
     bpm_low: float = 78.0  # BPM results fall in [bpm_low, 2 * bpm_low)
     offered_shortcuts: bool = False  # the packaged Windows app asks once about Start menu/desktop shortcuts
     hands_free: bool = True  # wait for the needle, pause between sides, stop after the last side
+    rekordbox: bool = True  # add saved albums to a rekordbox XML library
+    rekordbox_prefer: str = "flac"  # when both FLAC and MP3 are saved: which Rekordbox gets
     label_template: str = "avery_5163"
     label_printers: dict = field(default_factory=dict)  # template id -> printer last used for it
     label_rotate: bool = False  # thermal rolls: turn labels 90° for drivers that feed sideways
@@ -49,6 +51,10 @@ class Settings:
     @property
     def recordings_dir(self) -> Path:
         return Path(self.output_dir) / "_recordings"
+
+    @property
+    def rekordbox_xml(self) -> Path:
+        return Path(self.output_dir) / "rekordbox.xml"
 
     def token(self) -> str:
         return self.discogs_token.strip() or os.environ.get("DISCOGS_TOKEN", "").strip()
