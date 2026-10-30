@@ -68,20 +68,26 @@ class RbTrack:
 
 
 def _fold(s: str) -> str:
-    """Lowercase, no accents or punctuation: 'Nice 'n Slow' -> 'nice n slow'."""
+    """Lowercase, no accents or punctuation: 'Nice 'n Slow' -> 'nice n slow', 'S.I.O.' -> 'sio'."""
     s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower().replace("&", " and ")
+    s = re.sub(r"[.'`]", "", s)  # S.I.O. = SIO, Don't = Dont
     return " ".join(re.sub(r"[^a-z0-9]+", " ", s).split())
+
+
+def _compact(s: str) -> str:
+    """Folded with no spaces either, for comparing: 'S I O' = 'SIO', 'Love Hangover' = 'LoveHangover'."""
+    return _fold(s).replace(" ", "")
 
 
 def _title(s: str) -> str:
     """A track title for matching ('(Original Mix)' is the same track)."""
-    return _fold(re.sub(r"\s*[\(\[]original( mix)?[\)\]]\s*$", "", s or "", flags=re.I))
+    return _compact(re.sub(r"\s*[\(\[]original( mix)?[\)\]]\s*$", "", s or "", flags=re.I))
 
 
 def _names(artist: str) -> list[str]:
-    """'Pontchartrain / Blair French feat. X' -> ['pontchartrain', 'blair french', 'x']"""
+    """'Pontchartrain / Blair French feat. X' -> ['pontchartrain', 'blairfrench', 'x']"""
     parts = re.split(r"\s*(?:/|,|&|\+| and | feat\.? | ft\.? | featuring | vs\.? | x )\s*", artist or "", flags=re.I)
-    return [f for f in (_fold(re.sub(r"\s*\(\d+\)$", "", p)) for p in parts) if f]  # Discogs "Name (2)"
+    return [f for f in (_compact(re.sub(r"\s*\(\d+\)$", "", p)) for p in parts) if f]  # Discogs "Name (2)"
 
 
 def _path_key(path: str | Path) -> str:

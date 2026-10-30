@@ -17,6 +17,8 @@ LIB = Library([
     RbTrack("Afterlife", "Pontchartrain, Blair French", "Afterlife + Pool", 97.97, "F#m", 281, Path("D:/a.mp3")),
     RbTrack("Lambrusco", "Someone Else", "Other", 90.0, "Am", 300, Path("D:/other.mp3")),
     RbTrack("Gone Home (Original Mix)", "Pontchartrain", "All-Stars", 118.04, "C", 445, Path("D:/g.mp3")),
+    RbTrack("S.I.O.", "Pontchartrain", "RSD-SE01 - Hard Love Edits [MP3 320]", 104.0, "Dm", 270, Path("D:/s.mp3")),
+    RbTrack("Imma Phreak", "D.J. Emanuel", "Dungeon", 120.0, "Am", 300, Path("D:/i.mp3")),
 ])
 
 
@@ -26,6 +28,8 @@ def test_find_same_track():
     assert LIB.find("Pontchartrain / Blair French", "Afterlife").key == "F#m"  # split credits
     assert LIB.find("Pontchartrain", "Gone Home").key == "C"  # "(Original Mix)" is the same track
     assert LIB.find("Nobody", "Lambrusco", album="Date Night EP").key == "Dm"  # same album
+    assert LIB.find("Pontchartrain", "SIO").key == "Dm"  # periods don't matter
+    assert LIB.find("DJ Emanuel & Rahaan", "Imma Phreak").key == "Am"
     assert LIB.find("Pontchartrain", "Not On It") is None
     assert LIB.find("Blair", "Afterlife") is None  # only whole names count
 
