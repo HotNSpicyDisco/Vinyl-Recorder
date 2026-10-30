@@ -19,7 +19,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .. import audio, discogs, export, labels, library, naming, rekordbox, shortcuts, splitter, tempo, tracklist
+import numpy as np
+
+from .. import (audio, discogs, export, hum, labels, library, naming, rekordbox, shortcuts, splitter, tempo,
+                tracklist)
 from ..settings import Settings
 from .print_labels import PrintLabelsDialog
 from .tracklist_editor import TracklistEditor
@@ -427,7 +430,13 @@ class MainWindow(QMainWindow):
         b.clicked.connect(self._reset_clips)
         row.addWidget(b)
         v.addLayout(row)
+        self.hum_label = QLabel()
+        self.hum_label.setWordWrap(True)
+        self.hum_label.setStyleSheet("color: #d29922; font-weight: bold;")
+        self.hum_label.hide()
+        v.addWidget(self.hum_label)
         lay.addWidget(box)
+        self._hum_hits, self._hum_clear, self._hum_tick = 0, 0, 0
 
         box = QGroupBox("Record")
         h = QHBoxLayout()
@@ -740,10 +749,30 @@ class MainWindow(QMainWindow):
             self.wave.clips = rec.clips
             self.wave.update()
 
+    def _check_hum_live(self):
+        """Every few seconds while the input is quiet (needle up, between tracks): is there mains hum?
+        Two checks in a row must agree before the warning appears, and two clean ones before it goes."""
+        x = self.recorder.recent_audio()
+        if len(x) < 2 * self.recorder.samplerate or np.sqrt(np.mean(x ** 2)) > 10 ** (-45 / 20):
+            return  # music playing: it would hide hum (or look like it)
+        found = hum.detect(x, self.recorder.samplerate)
+        if found:
+            self._hum_hits, self._hum_clear = self._hum_hits + 1, 0
+            if self._hum_hits >= 2:
+                self.hum_label.setText("⚠ " + found.advice)
+                self.hum_label.show()
+        else:
+            self._hum_hits, self._hum_clear = 0, self._hum_clear + 1
+            if self._hum_clear >= 2:
+                self.hum_label.hide()
+
     def _tick(self):
         if self.recorder.is_open:
             self.meter.update_peaks(self.recorder.read_peaks())
             self._update_clip_label()
+            self._hum_tick += 1
+            if self._hum_tick % 90 == 0:  # about every 3 seconds
+                self._check_hum_live()
         if self.recorder.is_recording:
             self.rec_time.setText(fmt_time(self.recorder.seconds))
             self._hands_free_status()
@@ -782,6 +811,15 @@ class MainWindow(QMainWindow):
             self._refresh_rec_labels(rec)
             if not rec.clip_count:
                 self._status(f"{path.name}: {fmt_time(env.duration)}")
+            # Mains hum shows up in the quiet gaps between tracks
+            self.run_bg(lambda: hum.check_recording(path, env, splitter._levels(env)[2]), hum_checked,
+                        lambda _: None)
+
+        def hum_checked(found):
+            if found and rec in self.recordings:
+                self.hum_label.setText(f"⚠ {rec.path.name}: {found.advice}")
+                self.hum_label.show()
+                self._status(f"{side_name(rec.side)}: {found.advice}", 0)
 
         self.run_bg(lambda: audio.compute_envelope(path), done)
         return rec

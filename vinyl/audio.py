@@ -98,6 +98,7 @@ PREROLL = 2.0  # seconds kept from just before the sound started
 RUNOUT_SECONDS = 6.0  # this long without music ends a side (gaps between tracks are shorter)
 QUIET_BELOW_MUSIC_DB = 35.0  # "without music": this far below the loudest second so far...
 QUIET_MAX_DB = -40.0  # ...and never louder than this
+MONO_SECONDS = 4.0  # recent input kept for the live hum check
 
 
 class Recorder:
@@ -124,6 +125,8 @@ class Recorder:
         self.sides_target: int | None = None
         self.sides_done = 0
         self.side_breaks: list[float] = []  # seconds into the file where a side ended
+        self._mono = np.zeros(1, dtype=np.float32)  # sized properly when the input opens
+        self._mono_pos = 0
         self.stream = None  # sounddevice.InputStream while the input is open
         self.samplerate = 0
         self._select: list[int] | None = None
@@ -184,6 +187,9 @@ class Recorder:
         self._music_db = -np.inf  # loudest one-second level since the take started
         self._ring = np.zeros((int(samplerate * PREROLL), 2), dtype=np.float32)
         self._ring_pos, self._ring_full = 0, False
+        # The last few seconds in mono, for the hum check while you set levels
+        self._mono = np.zeros(int(samplerate * MONO_SECONDS), dtype=np.float32)
+        self._mono_pos = 0
 
     @on_audio_thread
     def close(self) -> None:
@@ -206,6 +212,7 @@ class Recorder:
             self._count_clips(mag >= CLIP_LEVEL)
         else:
             self._prev_clipped[:] = False
+        self._push_mono(data)
         if not self._recording:
             return
         if self.hands_free:
@@ -218,6 +225,26 @@ class Recorder:
         if self._writing:
             self._queue.put(data.copy())
             self._rec_frames += frames
+
+    def _push_mono(self, data: np.ndarray) -> None:
+        mono = data.mean(axis=1)
+        n, size = len(mono), len(self._mono)
+        if n >= size:
+            self._mono[:] = mono[-size:]
+            self._mono_pos = 0
+            return
+        end = self._mono_pos + n
+        if end <= size:
+            self._mono[self._mono_pos:end] = mono
+        else:
+            first = size - self._mono_pos
+            self._mono[self._mono_pos:] = mono[:first]
+            self._mono[:n - first] = mono[first:]
+        self._mono_pos = end % size
+
+    def recent_audio(self) -> np.ndarray:
+        """The last MONO_SECONDS of input (mono), oldest first."""
+        return np.concatenate([self._mono[self._mono_pos:], self._mono[:self._mono_pos]])
 
     # --- hands-free mode (runs on PortAudio's callback thread, so it stays cheap) ---
 
