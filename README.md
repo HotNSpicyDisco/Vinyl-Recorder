@@ -32,13 +32,28 @@ When it asks to use the microphone, click **OK**. That's how it records your aud
    green, half-done ones orange, and **Next not saved ↓** jumps to the next one to rip.
    Search Discogs for anything that isn't in your collection.
 2. **Record**: pick your audio interface and inputs, set levels with the meters and clip
-   counter, and record. **Whole LP** records side A, the flip and side B in one take. Double
-   LPs can be recorded a disc at a time.
+   counter, and press Record. **Hands-free** (on by default) waits for the needle to drop,
+   pauses when a side reaches its run-out groove (with a beep to tell you to flip), carries on
+   when the needle drops on the next side, and stops by itself after the last side. **Whole
+   LP** records every side in one take; double LPs can be recorded a disc at a time. A **hum
+   warning** tells you if the turntable's ground wire needs connecting.
 3. **Split & save**: tracks are found automatically using the Discogs track lengths. Each
    track starts on its first beat and keeps its full fade-out, and needle drops, lead-in
    rumble, crackle and run-out groove are left out. Zoom in with the scroll wheel to check, drag
    lines to adjust, and press Space to play or stop. Save as FLAC, MP3 320 or both, tagged
-   with title, artists, album, year, label, catalogue number, cover art, length and BPM.
+   with title, artists, album, year, label, catalogue number, cover art, length, BPM and
+   ReplayGain loudness. Tick **Normalize volume** to bring each album's loudest moment to -1 dB
+   (a pure volume change, nothing else). File and folder names follow a pattern you can change
+   in Settings.
+
+### Rekordbox
+
+Every saved album is added to `rekordbox.xml` in your save folder as a playlist (in a
+"Vinyl Recorder" folder), with BPM, artist, album, label, genre, year and length. **File → Add
+all saved albums to Rekordbox** adds the ones you saved before. In Rekordbox: **Preferences →
+Advanced → Database → rekordbox xml → Imported Library**, and choose the file once. The albums
+then appear under *rekordbox xml* in the sidebar: right-click to import. Rekordbox works out the
+key itself when it analyses them.
 
 ![Splitting a whole LP: the grey parts are gaps and the record flip, which aren't saved](docs/split.png)
 
@@ -57,9 +72,11 @@ or saves a PDF.
 | Thermal roll 4" × 2" | Zebra, Rollo, Munbyn, Dymo 4XL… (black only) |
 | Thermal roll 4" × 3" | the same |
 
-On sheets, **Start at label** uses up a partly used sheet. Print at 100% / Actual size. For
-thermal printers, set the label size in the printer's driver. If the label comes out sideways,
-tick **Turn 90°**. The layout comes from the Discogs Label Maker app.
+Every saved album also goes into a **label queue**: **File → Print label queue…** fills whole sheets
+(or a run of thermal labels) with different records at once. On sheets, **Start at label** uses up a
+partly used sheet. Tick **QR code** for a small code linking to the record's Discogs page. Print
+at 100% / Actual size. For thermal printers, set the label size in the printer's driver. If the
+label comes out sideways, tick **Turn 90°**. The layout comes from the Discogs Label Maker app.
 
 ### When the record doesn't match Discogs
 
