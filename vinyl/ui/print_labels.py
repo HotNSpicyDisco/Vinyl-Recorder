@@ -84,6 +84,9 @@ class PrintLabelsDialog(QDialog):
         self.rotate = QCheckBox("Turn 90° (if your printer prints the label sideways)")
         self.rotate.setChecked(settings.label_rotate)
         form.addRow("", self.rotate)
+        self.qr = QCheckBox("QR code to the record's Discogs page (scan it with a phone)")
+        self.qr.setChecked(settings.label_qr)
+        form.addRow("", self.qr)
         left.addLayout(form)
         self.info = QLabel()
         self.info.setWordWrap(True)
@@ -117,7 +120,7 @@ class PrintLabelsDialog(QDialog):
 
         for w in (self.template, self.start, self.copies):
             (w.currentIndexChanged if isinstance(w, QComboBox) else w.valueChanged).connect(self._update)
-        for b in (self.rotate, self.one, self.many):
+        for b in (self.rotate, self.one, self.many, self.qr):
             b.toggled.connect(self._update)
         self._fill_queue()
         self._update()
@@ -181,7 +184,7 @@ class PrintLabelsDialog(QDialog):
                               "\"Add this record to the label queue\".")
             self.preview.clear()
             return
-        placed, _ = labels.place(t, records, self.copies.value(), self.start.value())
+        placed, _ = labels.place(t, records, self.copies.value(), self.start.value(), self.qr.isChecked())
         pages = max(p.page for p in placed) + 1
         what = f"{len(records)} records" if queue_mode else f"{len(self.record.tracks)} tracks"
         text = f"{what}: {len(placed)} label{'s' if len(placed) > 1 else ''}"
@@ -194,12 +197,14 @@ class PrintLabelsDialog(QDialog):
         size = labels.page_size(t)
         rotated = self.rotate.isChecked() and not t.sheet
         width_in = size.height() if rotated else size.width()
-        img = labels.preview(t, records, self.start.value(), dpi=int(PREVIEW_W / width_in), rotate=rotated)
+        img = labels.preview(t, records, self.start.value(), dpi=int(PREVIEW_W / width_in), rotate=rotated,
+                             qr=self.qr.isChecked())
         self.preview.setPixmap(QPixmap.fromImage(img))
 
     def _remember(self):
         t = self._tmpl()
         self.settings.label_template = t.id
+        self.settings.label_qr = self.qr.isChecked()
         if not t.sheet:
             self.settings.label_rotate = self.rotate.isChecked()
         self.settings.save()
@@ -232,7 +237,8 @@ class PrintLabelsDialog(QDialog):
         printer.setPageLayout(labels.page_layout(t, rotate))
         printer.setFullPage(True)
         try:
-            labels.print_to(printer, t, records, self.copies.value(), self.start.value(), rotate)
+            labels.print_to(printer, t, records, self.copies.value(), self.start.value(), rotate,
+                            self.qr.isChecked())
         except Exception as e:  # driver problems: say so instead of failing silently
             QMessageBox.warning(self, "Print labels", f"Printing failed: {e}")
             return
@@ -250,7 +256,7 @@ class PrintLabelsDialog(QDialog):
         if not path:
             return
         labels.save_pdf(Path(path), t, records, self.copies.value(), self.start.value(),
-                        self.rotate.isChecked() and not t.sheet)
+                        self.rotate.isChecked() and not t.sheet, self.qr.isChecked())
         self._remember()
         QMessageBox.information(self, "Print labels", f"Saved {Path(path).name}")
         self._after_printing_queue()

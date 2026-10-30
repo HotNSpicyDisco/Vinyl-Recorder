@@ -181,12 +181,22 @@ MAX_TRACKS_PER_LABEL = 6  # longer tracklists continue on the next label
 FIT_STEPS = [(2, 3, False), (1, 3, False), (1, 3, True), (1, 2, True), (1, 1, True)]
 
 
+QR_SIZE = 36  # points (½"): as tall as the header, ~3.5 printer dots per module on a 203 dpi thermal printer
+
+
+def discogs_url(release_id: int) -> str:
+    return f"https://discogs.com/release/{release_id}"
+
+
 class _Layout:
-    def __init__(self, w: float, h: float, data: LabelData):
+    def __init__(self, w: float, h: float, data: LabelData, qr: bool = False):
         k = 1.15 if h > 3.2 * PTS else 1.0  # a little larger on 4" × 3⅓" labels
         self.k, self.w, self.h, self.data = k, w, h, data
         self.pad = 7
         self.inner_w = w - 2 * self.pad
+        # A QR code to the Discogs page sits top-right on the first label; the header wraps beside it
+        self.qr = QR_SIZE * k if qr and data.release_id else 0.0
+        self.head_w = self.inner_w - (self.qr + 6 if self.qr else 0)
         self.f_head, self.f_title = _font(11 * k, True), _font(9.5 * k)
         self.f_meta, self.f_row = _font(6.5 * k), _font(8 * k)
         self.head, self.title_size, self.meta, self.row = 11 * k, 9.5 * k, 6.5 * k, 8 * k
@@ -210,10 +220,11 @@ class _Layout:
         return len(self.name_lines(t)) * self.line_h + self.row_pad
 
     def title_lines(self) -> list[str]:
-        return _wrap(self.data.title, self.f_title, self.inner_w, self.title_lines_max)
+        return _wrap(self.data.title, self.f_title, self.head_w, self.title_lines_max)
 
     def header_h(self) -> float:
-        return self.head * 1.05 + len(self.title_lines()) * self.title_size * 1.15 + self.meta + 7
+        text = self.head * 1.05 + len(self.title_lines()) * self.title_size * 1.15 + self.meta + 7
+        return max(text, self.qr + 1) if self.qr else text
 
     def chunks(self) -> list[list[LabelTrack]]:
         """Tracks per label: the fewest labels MAX_TRACKS_PER_LABEL allows, tightening rows if needed."""
@@ -252,6 +263,24 @@ def _text(p: QPainter, x: float, baseline: float, text: str, font: QFont, max_w:
     p.drawText(QPointF(x * UNIT, baseline * UNIT), text)
 
 
+def draw_qr(p: QPainter, x: float, y: float, size: float, text: str):
+    """A QR code `size` points square with its top-left at (x, y)."""
+    import segno
+
+    matrix = segno.make(text, error="l", boost_error=False).matrix
+    module = size / len(matrix)
+    p.save()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(0, 0, 0))
+    for r, row in enumerate(matrix):
+        for c, dark in enumerate(row):
+            if dark:
+                # A hair oversized so neighbouring modules print as one solid block
+                p.drawRect(QRectF((x + c * module) * UNIT, (y + r * module) * UNIT,
+                                  module * UNIT + 1, module * UNIT + 1))
+    p.restore()
+
+
 def draw_label(p: QPainter, x: float, y: float, lay: _Layout, tracks: list[LabelTrack], first: bool,
                thermal: bool = False):
     """One label with its top-left corner at (x, y) points. The first label of a record has the header."""
@@ -263,23 +292,28 @@ def draw_label(p: QPainter, x: float, y: float, lay: _Layout, tracks: list[Label
     p.setPen(ink)
 
     if first:
+        top = yy
         lead = (d.label or "Various Artists") if (d.artist.lower() in VARIOUS or not d.artist) else d.artist
         yy += lay.head * 0.8
-        _text(p, left, yy, lead, lay.f_head, lay.inner_w)
+        _text(p, left, yy, lead, lay.f_head, lay.head_w)
         yy += lay.head * 0.25
         for line in lay.title_lines():
             yy += lay.title_size * 1.15
-            _text(p, left, yy, line, lay.f_title, lay.inner_w)
+            _text(p, left, yy, line, lay.f_title, lay.head_w)
         yy += lay.meta + 3
-        id_text = f"ID {d.release_id}" if d.release_id else ""
+        # The Discogs ID goes in the corner, unless the QR code (which links there) takes its place
+        id_text = f"ID {d.release_id}" if d.release_id and not lay.qr else ""
         id_w = _width(id_text, lay.f_meta)
         meta = [m for m in (d.label if lead != d.label else "", d.year, ", ".join(d.styles)) if m]
         p.setPen(grey)
-        _text(p, left, yy, " · ".join(meta), lay.f_meta, lay.inner_w - id_w - 8)
+        _text(p, left, yy, " · ".join(meta), lay.f_meta, lay.head_w - id_w - (8 if id_text else 0))
         if id_text:
             _text(p, right, yy, id_text, lay.f_meta, id_w + 1, align="right")
         p.setPen(ink)
         yy += 4
+        if lay.qr:
+            draw_qr(p, right - lay.qr, top, lay.qr, discogs_url(d.release_id))
+            yy = max(yy, top + lay.qr + 1)
 
     # Track table: Pos | Track | Len | BPM | Rtg (the boxes stay drawn to write in by hand)
     x_pos, x_track = left, left + lay.pos_w
@@ -353,13 +387,15 @@ def slots(tmpl: Template) -> list[tuple[float, float]]:
 Records = LabelData | list[LabelData]
 
 
-def place(tmpl: Template, records: Records, copies: int = 1, start: int = 1) -> tuple[list[Placed], _Layout]:
+def place(tmpl: Template, records: Records, copies: int = 1, start: int = 1,
+          qr: bool = False) -> tuple[list[Placed], _Layout]:
     """Where each label goes: the records one after another (each with its continuation labels).
-    On sheets, `start` skips labels already used (1 = top-left). Also returns the first record's layout."""
+    On sheets, `start` skips labels already used (1 = top-left). qr: add the Discogs QR code.
+    Also returns the first record's layout."""
     records = records if isinstance(records, list) else [records]
     labels = []
     for data in records:
-        lay = _Layout(tmpl.label_w * PTS, tmpl.label_h * PTS, data)
+        lay = _Layout(tmpl.label_w * PTS, tmpl.label_h * PTS, data, qr)
         chunks = lay.chunks()
         labels += [(c, i == 0, lay) for _ in range(max(1, copies)) for i, c in enumerate(chunks)]
     positions = slots(tmpl)
@@ -374,12 +410,12 @@ def place(tmpl: Template, records: Records, copies: int = 1, start: int = 1) -> 
 
 def paint_pages(p: QPainter, device_dpi: float, tmpl: Template, data: Records, copies: int = 1,
                 start: int = 1, new_page=None, rotate: bool = False, outlines: bool = False,
-                max_pages: int | None = None) -> int:
+                max_pages: int | None = None, qr: bool = False) -> int:
     """Draw the pages on painter p (a printer, PDF or image); new_page() is called between pages.
     data: one record or several (a label queue). rotate: turn roll labels 90° for printers whose
     driver feeds labels sideways. outlines: draw every label position's edge (for the on-screen preview).
     Returns the number of pages."""
-    placed, _ = place(tmpl, data, copies, start)
+    placed, _ = place(tmpl, data, copies, start, qr)
     pages = max(pl.page for pl in placed) + 1
     w, h = tmpl.label_w * PTS, tmpl.label_h * PTS
     for page in range(min(pages, max_pages or pages)):
@@ -417,7 +453,7 @@ def page_layout(tmpl: Template, rotate: bool = False) -> QPageLayout:
 
 
 def save_pdf(path: Path, tmpl: Template, data: Records, copies: int = 1, start: int = 1,
-             rotate: bool = False) -> int:
+             rotate: bool = False, qr: bool = False) -> int:
     writer = QPdfWriter(str(path))
     writer.setResolution(600)
     writer.setPageLayout(page_layout(tmpl, rotate))
@@ -425,12 +461,13 @@ def save_pdf(path: Path, tmpl: Template, data: Records, copies: int = 1, start: 
     writer.setTitle(f"{first.artist} – {first.title} labels" if not isinstance(data, list) or len(data) == 1
                     else f"Labels for {len(data)} records")
     p = QPainter(writer)
-    pages = paint_pages(p, 600, tmpl, data, copies, start, writer.newPage, rotate)
+    pages = paint_pages(p, 600, tmpl, data, copies, start, writer.newPage, rotate, qr=qr)
     p.end()
     return pages
 
 
-def preview(tmpl: Template, data: Records, start: int = 1, dpi: int = 96, rotate: bool = False) -> QImage:
+def preview(tmpl: Template, data: Records, start: int = 1, dpi: int = 96, rotate: bool = False,
+            qr: bool = False) -> QImage:
     """The first page as an image, with label outlines, for showing on screen."""
     size = page_size(tmpl)
     if rotate and not tmpl.sheet:
@@ -438,15 +475,15 @@ def preview(tmpl: Template, data: Records, start: int = 1, dpi: int = 96, rotate
     img = QImage(int(size.width() * dpi), int(size.height() * dpi), QImage.Format.Format_RGB32)
     img.fill(QColor(255, 255, 255))
     p = QPainter(img)
-    paint_pages(p, dpi, tmpl, data, 1, start, rotate=rotate, outlines=True, max_pages=1)
+    paint_pages(p, dpi, tmpl, data, 1, start, rotate=rotate, outlines=True, max_pages=1, qr=qr)
     p.end()
     return img
 
 
 def print_to(printer, tmpl: Template, data: Records, copies: int = 1, start: int = 1,
-             rotate: bool = False) -> int:
+             rotate: bool = False, qr: bool = False) -> int:
     """Print on a QPrinter already set up (and chosen in the print dialog)."""
     p = QPainter(printer)
-    pages = paint_pages(p, printer.resolution(), tmpl, data, copies, start, printer.newPage, rotate)
+    pages = paint_pages(p, printer.resolution(), tmpl, data, copies, start, printer.newPage, rotate, qr=qr)
     p.end()
     return pages

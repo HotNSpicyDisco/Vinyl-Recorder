@@ -94,6 +94,36 @@ def test_pdf_page_sizes(tmp_path):
     assert (round(float(box[0][0])), round(float(box[0][1]))) == (144, 288)
 
 
+def test_qr_code_is_drawn_exactly():
+    import segno
+
+    tmpl = labels.TEMPLATES_BY_ID["roll_4x2"]
+    data = labels.label_data(EIGHT)
+    dpi = 400
+    img = labels.preview(tmpl, data, dpi=dpi, qr=True)
+    matrix = segno.make(labels.discogs_url(EIGHT.id), error="l", boost_error=False).matrix
+    size = labels.QR_SIZE  # 4" × 2" labels: no text scaling
+    x0, y0 = tmpl.label_w * 72 - 7 - size, 7  # top-right, inside the 7 pt margin
+    module = size / len(matrix)
+    wrong = 0
+    for r, row in enumerate(matrix):
+        for c, dark in enumerate(row):
+            px = int((x0 + (c + 0.5) * module) * dpi / 72)
+            py = int((y0 + (r + 0.5) * module) * dpi / 72)
+            wrong += (img.pixelColor(px, py).lightness() < 128) != bool(dark)
+    assert wrong == 0, f"{wrong} of {len(matrix) ** 2} modules wrong"
+    # The QR takes the place of the "ID" text, and the first label still holds 6 tracks
+    placed, lay = labels.place(tmpl, data, qr=True)
+    assert lay.qr == size and [len(p.tracks) for p in placed] == [6, 2]
+    six = Release(8, "A", "B", "", [], [], "", "", EIGHT.tracks[:6], "", "")
+    placed, _ = labels.place(tmpl, labels.label_data(six), qr=True)
+    assert len(placed) == 1  # a 6-track record still fits one label
+    # A record typed in by hand has no Discogs page: no QR
+    _, lay = labels.place(tmpl, labels.label_data(Release(-5, "X", "Y", "", [], [], "", "", EIGHT.tracks, "", "")),
+                          qr=True)
+    assert lay.qr == 0
+
+
 def test_preview_draws_something():
     img = labels.preview(labels.TEMPLATES_BY_ID["roll_4x2"], labels.label_data(EIGHT), dpi=50)
     assert (img.width(), img.height()) == (200, 100)

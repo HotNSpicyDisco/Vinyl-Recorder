@@ -49,6 +49,7 @@ class Settings:
     label_template: str = "avery_5163"
     label_printers: dict = field(default_factory=dict)  # template id -> printer last used for it
     label_rotate: bool = False  # thermal rolls: turn labels 90° for drivers that feed sideways
+    label_qr: bool = False  # QR code to the record's Discogs page on its label
     extra: dict = field(default_factory=dict)
 
     @property
