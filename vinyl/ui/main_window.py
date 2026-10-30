@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from .. import audio, discogs, export, library, shortcuts, splitter, tempo, tracklist
 from ..settings import Settings
+from .print_labels import PrintLabelsDialog
 from .tracklist_editor import TracklistEditor
 from .widgets import LevelMeter, WaveformView, fmt_time
 
@@ -186,6 +187,7 @@ class MainWindow(QMainWindow):
         self.preview: discogs.Release | None = None
         self.current: Recording | None = None
         self.bpms: dict[int, float | None] = {}  # track number -> BPM found when saving
+        self.lengths: dict[int, float] = {}  # track number -> length as saved
         self.riplog = library.RipLog()
         self.collection = library.CollectionCache()
         self.edits = library.ReleaseEdits()
@@ -727,6 +729,12 @@ class MainWindow(QMainWindow):
         self.edit_preview_btn.setMinimumHeight(36)
         self.edit_preview_btn.clicked.connect(lambda: self._edit_tracklist(self.preview))
         row.addWidget(self.edit_preview_btn)
+        self.print_preview_btn = QPushButton("Print label…")
+        self.print_preview_btn.setToolTip("Labels for the sleeve: Avery sheets or a thermal printer")
+        self.print_preview_btn.setEnabled(False)
+        self.print_preview_btn.setMinimumHeight(36)
+        self.print_preview_btn.clicked.connect(lambda: self._print_labels(self.preview))
+        row.addWidget(self.print_preview_btn)
         self.use_btn = QPushButton("Use this album and start recording →")
         self.use_btn.setEnabled(False)
         self.use_btn.setMinimumHeight(36)
@@ -1063,6 +1071,7 @@ class MainWindow(QMainWindow):
         self.preview_status.setText(self.riplog.describe(rel.id))
         self.use_btn.setEnabled(True)
         self.edit_preview_btn.setEnabled(True)
+        self.print_preview_btn.setEnabled(True)
 
     def _edit_tracklist(self, rel: discogs.Release | None):
         """Fix a record's tracklist (or, with rel None, enter one that isn't on Discogs)."""
@@ -1153,7 +1162,7 @@ class MainWindow(QMainWindow):
                     return
             self._clear_recordings()
         self.release = new
-        self.bpms = {}
+        self.bpms, self.lengths = {}, {}
         for rec in self.recordings:
             rec.edges = []  # re-detect against the new tracklist
         self.album_label.setText(f"<b>{self.release.artist} – {self.release.title}</b> ({self.release.year})")
@@ -1284,6 +1293,10 @@ class MainWindow(QMainWindow):
         row.addWidget(self.out_label, 1)
         b = QPushButton("Change…")
         b.clicked.connect(self._open_settings)
+        row.addWidget(b)
+        b = QPushButton("Print labels…")
+        b.setToolTip("Labels for the sleeve: Avery sheets or a thermal printer, with measured lengths and BPMs")
+        b.clicked.connect(lambda: self._print_labels(self.release))
         row.addWidget(b)
         row.addSpacing(12)
         row.addWidget(QLabel("Format:"))
@@ -1648,6 +1661,7 @@ class MainWindow(QMainWindow):
             self.save_btn.setEnabled(True)
             if detect:
                 self.bpms.update({s.track.number: s.bpm for s in saved})
+            self.lengths.update({s.track.number: s.length for s in saved})
             if self.current:
                 self._update_split_view()
             folder = export.album_folder(out, release, mp3_subfolder=False)
@@ -1661,9 +1675,13 @@ class MainWindow(QMainWindow):
                      for s in saved]
             todo = [s for s in release.sides if s not in self.riplog.entries[str(release.id)]["sides_saved"]]
             more = f"\n\nStill to record: side {', '.join(todo)}" if todo else ""
-            choice = self._after_save_dialog(
-                f"Saved {len(saved)} tracks to:\n{folder.parent}\n\n" + "\n".join(lines) + more,
-                offer_next=not todo and bool(self.collection.items))
+            while True:  # printing labels comes back here, so you can still go on to the next album
+                choice = self._after_save_dialog(
+                    f"Saved {len(saved)} tracks to:\n{folder.parent}\n\n" + "\n".join(lines) + more,
+                    offer_next=not todo and bool(self.collection.items))
+                if choice != "print":
+                    break
+                self._print_labels(release)
             if choice == "open":
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
             elif choice == "next":
@@ -1678,13 +1696,27 @@ class MainWindow(QMainWindow):
     def _after_save_dialog(self, text: str, offer_next: bool) -> str:
         box = QMessageBox(QMessageBox.Icon.Information, "Saved", text, parent=self)
         nxt = box.addButton("Next album →", QMessageBox.ButtonRole.AcceptRole) if offer_next else None
+        prt = box.addButton("Print labels…", QMessageBox.ButtonRole.ActionRole)
         opn = box.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Close)
         if nxt:
             box.setDefaultButton(nxt)
         box.exec()
         clicked = box.clickedButton()
-        return "next" if nxt and clicked is nxt else "open" if clicked is opn else "close"
+        if nxt and clicked is nxt:
+            return "next"
+        return "print" if clicked is prt else "open" if clicked is opn else "close"
+
+    def _print_labels(self, release: discogs.Release | None):
+        """Label printing for a record, with the lengths and BPMs measured from its saved tracks."""
+        if release is None:
+            self._error("Pick the album on the Album tab first.")
+            return
+        bpms, lengths = export.read_saved(Path(self.settings.output_dir), release)
+        if self.release and release.id == self.release.id:  # this session's results are the newest
+            bpms.update({n: b for n, b in self.bpms.items() if b})
+            lengths.update(self.lengths)
+        PrintLabelsDialog(release, self.settings, bpms, lengths, self).exec()
 
     def _go_to_next_album(self, after_id: int):
         """Clear the finished album's sides and select the next record in the collection that isn't saved."""

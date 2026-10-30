@@ -42,6 +42,25 @@ When it asks to use the microphone, click **OK**. That's how it records your aud
 
 ![Splitting a whole LP: the grey parts are gaps and the record flip, which aren't saved](docs/split.png)
 
+### Labels for your sleeves
+
+**Print labels…** (on the Split & save tab, the Album tab, or straight after saving) makes a label
+with the artist, title, label · year · styles and the Discogs ID, plus a track table with the
+**measured lengths and BPMs** and an empty rating box to write in. Tracklists longer than six
+tracks carry on onto a second label. It prints to any printer through the normal print window,
+or saves a PDF.
+
+| Template | For |
+|---|---|
+| Avery 5163 / 8163: 4" × 2", 10 per letter sheet | laser / inkjet |
+| Avery 5164 / 8164: 4" × 3⅓", 6 per letter sheet | laser / inkjet |
+| Thermal roll 4" × 2" | Zebra, Rollo, Munbyn, Dymo 4XL… (black only) |
+| Thermal roll 4" × 3" | the same |
+
+On sheets, **Start at label** uses up a partly used sheet. Print at 100% / Actual size. For
+thermal printers, set the label size in the printer's driver. If the label comes out sideways,
+tick **Turn 90°**. The layout comes from the Discogs Label Maker app.
+
 ### When the record doesn't match Discogs
 
 - **Played side B first?** Set **played: B → A** next to the recording on the Split & save tab.

@@ -9,6 +9,7 @@ import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC, Picture
 from mutagen.id3 import APIC, ID3, TALB, TBPM, TCON, TDRC, TIT2, TLEN, TPE1, TPE2, TPUB, TRCK, TXXX
+from mutagen import MutagenError
 from mutagen.mp3 import MP3
 from scipy.signal import resample_poly
 
@@ -180,6 +181,36 @@ def tag_mp3(path: Path, track: Track, release: Release, info: SavedTrack) -> Non
         tags.add(APIC(encoding=3, mime=_mime(release.cover), type=3, desc="Cover", data=release.cover))
     # ID3v2.3 is what Windows Explorer, Rekordbox and Serato read most reliably
     f.save(v2_version=3)
+
+
+def read_saved(output_dir: Path, release: Release) -> tuple[dict[int, float], dict[int, float]]:
+    """BPMs and lengths (by track number) from tracks already saved for this release, for labels."""
+    bpms: dict[int, float] = {}
+    lengths: dict[int, float] = {}
+    for folder in (album_folder(output_dir, release), album_folder(output_dir, release, mp3_subfolder=True)):
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.iterdir()):
+            try:
+                if path.suffix.lower() == ".flac":
+                    f = FLAC(path)
+                    number, bpm = f.get("TRACKNUMBER", [""])[0], f.get("BPM", [""])[0]
+                elif path.suffix.lower() == ".mp3":
+                    f = MP3(path, ID3=ID3)
+                    tags = f.tags or {}
+                    number = str(tags["TRCK"].text[0]) if "TRCK" in tags else ""
+                    bpm = str(tags["TBPM"].text[0]) if "TBPM" in tags else ""
+                else:
+                    continue
+                n = int(number.split("/")[0])
+            except (ValueError, KeyError, OSError, IndexError, MutagenError):
+                continue
+            lengths.setdefault(n, f.info.length)
+            try:
+                bpms.setdefault(n, float(bpm))
+            except ValueError:
+                pass
+    return bpms, lengths
 
 
 def _mime(data: bytes) -> str:
