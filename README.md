@@ -29,7 +29,8 @@ When it asks to use the microphone, click **OK**. That's how it records your aud
 ## What it does
 
 1. **Album**: your Discogs collection as a list to work down. Already-saved records are
-   green, half-done ones orange, and **Next not saved ↓** jumps to the next one to rip.
+   green, half-done ones orange, and ones already in your Rekordbox library (ripped before,
+   or bought digitally) blue. **Next not saved ↓** jumps to the next one to rip.
    Search Discogs for anything that isn't in your collection.
 2. **Record**: pick your audio interface and inputs, set levels with the meters and clip
    counter, and press Record. **Hands-free** (on by default) waits for the needle to drop,

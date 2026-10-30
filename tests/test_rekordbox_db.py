@@ -80,3 +80,13 @@ def test_keys_copied_into_saved_tracks(tmp_path):
     assert export.read_saved(out / "mp3", rel)[0] == {1: 113.0}  # BPM filled in where there was none
     assert export.read_saved_keys(out / "flac", rel) == {1: "Dm"}
     assert export.copy_rekordbox_keys(out, lib) == 0  # already there
+
+
+def test_records_already_in_rekordbox():
+    assert LIB.has_album("Pontchartrain", "Date Night EP")
+    assert LIB.has_album("Pontchartrain", "Hard Love Edits")  # "RSD-SE01 - Hard Love Edits [MP3 320]"
+    assert LIB.has_album("Pontchartrain / Blair French", "Afterlife / Pool")  # "Afterlife + Pool"
+    assert not LIB.has_album("Pontchartrain", "Love Is Madness EP")  # not in this library
+    assert not LIB.has_album("Someone Else", "Date Night EP")  # someone else's record
+    assert LIB.has_album("Various", "Hard Love Edits")  # compilations go by a long enough name
+    assert not LIB.has_album("Various", "Edits")

@@ -50,7 +50,8 @@ class LabelsTab(QWidget):
         v.addLayout(row)
         self.coll = QListWidget()
         self.coll.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.coll.setToolTip("Ctrl- or Shift-click to pick several. Green: saved; orange: part done.")
+        self.coll.setToolTip("Ctrl- or Shift-click to pick several. Green: saved; orange: part done; "
+                                "blue: already in your Rekordbox library.")
         self.coll.itemDoubleClicked.connect(lambda _: self.add_selected())
         v.addWidget(self.coll, 1)
         self.add_btn = QPushButton("Add selected to the sheet  →")
@@ -192,6 +193,8 @@ class LabelsTab(QWidget):
                 item.setForeground(QColor("#2da44e"))
             elif status == library.PARTIAL:
                 item.setForeground(QColor("#d29922"))
+            elif it.id in h._in_rb:
+                item.setForeground(h.IN_REKORDBOX)
             self.coll.addItem(item)
         if not h.collection.items:
             self.pick_info.setText("Your Discogs collection isn't loaded: add your token in File → Settings. "

@@ -101,9 +101,31 @@ class Library:
     def __post_init__(self):
         self.by_title: dict[str, list[RbTrack]] = {}
         self.by_path: dict[str, RbTrack] = {}
+        self.albums: dict[str, set[str]] = {}  # artist name -> albums of theirs ("" key: every album)
         for t in self.tracks:
             self.by_title.setdefault(_title(t.title), []).append(t)
             self.by_path[_path_key(t.path)] = t
+            album = _compact(t.album)
+            if album:
+                for name in _names(t.artist) + [""]:
+                    self.albums.setdefault(name, set()).add(album)
+
+    def has_album(self, artist: str, title: str) -> bool:
+        """Whether Rekordbox has this record (by album name), e.g. ripped before this app.
+        'Hard Love Edits' matches 'RSD-SE01 - Hard Love Edits [MP3 320]'."""
+        names = _names(artist)
+        various = not names or names[0] in ("various", "variousartists", "unknownartist")
+        wanted = {_compact(title)}
+        wanted.add(re.sub(r"(ep|lp)$", "", next(iter(wanted))))  # "Date Night EP" = "Date Night"
+        for w in wanted:
+            if len(w) < 3:
+                continue
+            for name in [""] if various else names:
+                for album in self.albums.get(name, ()):
+                    # Compilations have no artist to go by: only a long, exact-enough name counts
+                    if album == w or (len(w) >= (12 if various else 6) and w in album):
+                        return True
+        return False
 
     def at(self, path: Path) -> RbTrack | None:
         """The Rekordbox entry for this exact file."""

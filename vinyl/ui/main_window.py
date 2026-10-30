@@ -285,6 +285,7 @@ class MainWindow(QMainWindow):
         self._rb_loading = False
         self._rb_seen: rekordbox_db.Library | None = None
         self._rb_again = False
+        self._in_rb: set[int] = set()  # collection records Rekordbox already has (ripped before, bought digital…)
         self._release_cache: dict[int, discogs.Release] = {}
         self._preview_wanted: int | None = None
 
@@ -1108,12 +1109,16 @@ class MainWindow(QMainWindow):
         self._progress_signals = progress  # keep alive while the worker runs
         self.run_bg(work, done, failed)
 
+    IN_REKORDBOX = QColor("#3b82f6")
+
     def _status_mark(self, release_id: int) -> tuple[str, QColor | None]:
         status = self.riplog.status(release_id)
         if status == library.SAVED:
             return "✓ ", QColor("#2da44e")
         if status == library.PARTIAL:
             return "◐ ", QColor("#d29922")
+        if release_id in self._in_rb:
+            return "♪ ", self.IN_REKORDBOX
         return "", None
 
     def _fill_collection(self):
@@ -1160,14 +1165,20 @@ class MainWindow(QMainWindow):
             return
         total = [i for i in self.collection.items if not self.coll_vinyl.isChecked() or i.is_vinyl]
         saved = sum(1 for i in total if self.riplog.status(i.id) == library.SAVED)
+        in_rb = sum(1 for i in total if i.id in self._in_rb and self.riplog.status(i.id) is None)
         who = f"{self.collection.username}'s collection · " if self.collection.username else ""
-        self.coll_info.setText(f"{who}{len(total)} records · <b>{saved} saved</b> · {len(total) - saved} to go"
+        self.coll_info.setText(f"{who}{len(total)} records · <b>{saved} saved</b>"
+                               + (f" · <span style='color:{self.IN_REKORDBOX.name()}'>{in_rb} in Rekordbox</span>"
+                                  if in_rb else "")
+                               + f" · {len(total) - saved - in_rb} to go"
                                + (f" · {shown} shown" if shown is not None else ""))
 
     def _decorate_collection_item(self, item: QListWidgetItem, it: discogs.CollectionItem):
         # No symbol prefix here: symbol glyphs come from a taller fallback font and break the fixed row height.
         _, color = self._status_mark(it.id)
         short, note = self.riplog.short(it.id), self.riplog.describe(it.id)
+        if not short and it.id in self._in_rb:
+            short, note = "in Rekordbox", "Already in your Rekordbox library (ripped before, or bought digitally)"
         year_label = " · ".join(p for p in (it.year if it.year != "0" else "", f"{it.label} {it.catno}".strip()) if p)
         item.setText(f"{it.name}\n{(short.upper() + '  ·  ') if short else ''}{year_label}")
         item.setToolTip(f"{it.name}\n{it.subtitle}" + (f"\n{note}" if note else ""))
@@ -2059,17 +2070,23 @@ class MainWindow(QMainWindow):
         self._rb_loading = True
         out = Path(self.settings.output_dir)
 
+        items = list(self.collection.items)
+
         def work():
             lib = self.rb_cache.get()
             copied = export.copy_rekordbox_keys(out, lib) if lib and copy_keys and out.is_dir() else 0
-            return lib, copied
+            in_rb = {i.id for i in items if lib.has_album(i.artist, i.title)} if lib else set()
+            return lib, copied, in_rb
 
         def done(result):
             self._rb_loading = False
             if self._rb_again:
                 self._rb_again = False
                 QTimer.singleShot(0, lambda: self._load_rekordbox(copy_keys=True, manual=manual))
-            lib, copied = result
+            lib, copied, in_rb = result
+            if lib is not None and in_rb != self._in_rb:
+                self._in_rb = in_rb
+                self._refresh_marks()
             if lib is None:
                 if manual:
                     self._error(self.rb_cache.error or "Couldn't read the Rekordbox library.")
