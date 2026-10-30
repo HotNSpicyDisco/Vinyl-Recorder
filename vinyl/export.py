@@ -13,7 +13,7 @@ from mutagen import MutagenError
 from mutagen.mp3 import MP3
 from scipy.signal import resample_poly
 
-from . import naming
+from . import loudness, naming
 from .discogs import Release, Track
 from .tempo import DEFAULT_LOW_BPM, estimate_bpm
 
@@ -51,12 +51,68 @@ class SavedTrack:
     length: float  # seconds
     bpm: float | None
     files: list[Path] = field(default_factory=list)
+    peak: float = 0.0  # loudest sample as saved (linear)
+    blocks: np.ndarray | None = field(default=None, repr=False)  # loudness blocks, for album ReplayGain
+
+
+NORMALIZE_TARGET_DB = -1.0  # the album's loudest moment, after normalizing
+MAX_NORMALIZE_DB = 20.0
+
+
+def measure_peak(recording: Path, cuts: list[TrackCut]) -> float:
+    """The loudest sample in the parts of a recording that will be saved."""
+    top = 0.0
+    with sf.SoundFile(recording) as src:
+        for cut in cuts:
+            src.seek(max(0, int(cut.start * src.samplerate)))
+            left = max(0, int(cut.end * src.samplerate)) - src.tell()
+            while left > 0:
+                block = src.read(min(left, src.samplerate * 10), dtype="float32", always_2d=True)
+                if not len(block):
+                    break
+                top = max(top, float(np.abs(block).max()))
+                left -= len(block)
+    return top
+
+
+def normalize_gain(peak: float) -> float:
+    """dB to bring an album whose loudest sample is `peak` to NORMALIZE_TARGET_DB (a pure volume change)."""
+    if peak <= 0:
+        return 0.0
+    return float(np.clip(NORMALIZE_TARGET_DB - 20 * np.log10(peak), -MAX_NORMALIZE_DB, MAX_NORMALIZE_DB))
+
+
+def write_replaygain(saved: list[SavedTrack]) -> float | None:
+    """ReplayGain 2.0 track and album tags on every saved file. Returns the album gain (dB)."""
+    blocks = [s.blocks for s in saved if s.blocks is not None and len(s.blocks)]
+    album_gain = loudness.replaygain(loudness.integrated(np.concatenate(blocks))) if blocks else None
+    album_peak = max((s.peak for s in saved), default=0.0)
+    for s in saved:
+        track_gain = loudness.replaygain(loudness.integrated(s.blocks)) if s.blocks is not None else None
+        tags = {"REPLAYGAIN_TRACK_GAIN": track_gain, "REPLAYGAIN_ALBUM_GAIN": album_gain}
+        values = {k: f"{v:+.2f} dB" for k, v in tags.items() if v is not None}
+        values["REPLAYGAIN_TRACK_PEAK"] = f"{s.peak:.6f}"
+        values["REPLAYGAIN_ALBUM_PEAK"] = f"{album_peak:.6f}"
+        for path in s.files:
+            if path.suffix == ".flac":
+                f = FLAC(path)
+                for k, v in values.items():
+                    f[k] = v
+                f.save()
+            else:
+                tags_ = ID3(path)
+                for k, v in values.items():
+                    tags_.add(TXXX(encoding=3, desc=k, text=v))
+                tags_.save(v2_version=3)
+    return album_gain
 
 
 def export_side(recording: Path, cuts: list[TrackCut], release: Release, output_dir: Path,
                 fmt: str = "flac", bpm_low: float = DEFAULT_LOW_BPM, detect_bpm: bool = True,
-                pattern: str = naming.DEFAULT_PATTERN) -> list[SavedTrack]:
-    """Cut, save and tag the tracks. `pattern` decides folders and file names (see vinyl.naming)."""
+                pattern: str = naming.DEFAULT_PATTERN, gain_db: float = 0.0) -> list[SavedTrack]:
+    """Cut, save and tag the tracks. `pattern` decides folders and file names (see vinyl.naming);
+    gain_db changes the volume of everything (normalizing). Call write_replaygain() on the result
+    of all sides afterwards for the loudness tags."""
     want_flac, want_mp3 = fmt in ("flac", "both"), fmt in ("mp3", "both")
     saved, folders = [], set()
     with sf.SoundFile(recording) as src:
@@ -69,7 +125,11 @@ def export_side(recording: Path, cuts: list[TrackCut], release: Release, output_
             src.seek(a)
             data = src.read(b - a, dtype="float32", always_2d=True)
             _fade(data, int(FADE_SECONDS * sr))
-            result = SavedTrack(t, len(data) / sr, estimate_bpm(data, sr, bpm_low) if detect_bpm else None)
+            if gain_db:
+                data *= np.float32(10 ** (gain_db / 20))
+                np.clip(data, -1.0, 1.0, out=data)
+            result = SavedTrack(t, len(data) / sr, estimate_bpm(data, sr, bpm_low) if detect_bpm else None,
+                                peak=loudness.peak(data), blocks=loudness.block_powers(data, sr))
             if want_flac:
                 path = naming.track_path(output_dir, release, t, "flac", pattern, result.bpm)
                 path.parent.mkdir(parents=True, exist_ok=True)

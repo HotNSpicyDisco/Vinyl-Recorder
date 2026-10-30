@@ -288,6 +288,41 @@ def test_export_mp3_and_flac_with_bpm(tmp_path):
     assert only_mp3[0].files[0].parent.name == "Tempo (1983)" and only_mp3[0].bpm is None
 
 
+def test_normalize_and_replaygain(tmp_path):
+    from mutagen.id3 import ID3
+
+    from vinyl import loudness
+    from vinyl.export import measure_peak, normalize_gain, write_replaygain
+
+    # Two quiet tracks (peaks -12 and -18 dBFS): normalizing raises both by the same 11 dB
+    t = np.arange(SR * 12) / SR
+    quiet = (10 ** (-12 / 20) * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    side = np.concatenate([quiet, np.zeros(SR * 2, np.float32), quiet * 10 ** (-6 / 20)])
+    wav = tmp_path / "side.wav"
+    sf.write(wav, np.stack([side, side], axis=1), SR, subtype="PCM_24")
+    rel = Release(1, "A", "B", "", [], [], "", "", [Track("A1", "Loud", 12, "", 1), Track("A2", "Soft", 12, "", 2)],
+                  "", "")
+    cuts = [TrackCut(rel.tracks[0], 0, 12), TrackCut(rel.tracks[1], 14, 26)]
+    peak = measure_peak(wav, cuts)
+    assert abs(20 * np.log10(peak) - -12) < 0.05
+    gain = normalize_gain(peak)
+    assert abs(gain - 11) < 0.05
+    saved = export_side(wav, cuts, rel, tmp_path / "out", fmt="both", detect_bpm=False, gain_db=gain)
+    album_gain = write_replaygain(saved)
+
+    loud = sf.read(saved[0].files[0], dtype="float32")[0]
+    soft = sf.read(saved[1].files[0], dtype="float32")[0]
+    assert abs(20 * np.log10(np.abs(loud).max()) - -1) < 0.05  # loudest moment at -1 dB
+    assert abs(20 * np.log10(np.abs(soft).max()) - -7) < 0.05  # the balance between tracks is kept
+    flac = FLAC(saved[0].files[0])
+    track_gain = float(flac["REPLAYGAIN_TRACK_GAIN"][0].split()[0])
+    expected = loudness.replaygain(loudness.integrated(loudness.block_powers(loud, SR)))
+    assert abs(track_gain - expected) < 0.01 and flac["REPLAYGAIN_ALBUM_PEAK"][0].startswith("0.89")
+    assert float(flac["REPLAYGAIN_ALBUM_GAIN"][0].split()[0]) == round(album_gain, 2)
+    mp3 = ID3(saved[1].files[1])
+    assert "TXXX:REPLAYGAIN_TRACK_GAIN" in mp3 and "TXXX:REPLAYGAIN_ALBUM_GAIN" in mp3
+
+
 def test_clip_counter():
     from types import SimpleNamespace
 

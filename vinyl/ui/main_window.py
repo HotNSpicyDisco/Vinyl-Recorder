@@ -1438,6 +1438,12 @@ class MainWindow(QMainWindow):
         self.format_combo.setCurrentIndex(max(0, self.format_combo.findData(self.settings.export_format)))
         self.format_combo.currentIndexChanged.connect(self._format_changed)
         row.addWidget(self.format_combo)
+        self.normalize = QCheckBox("Normalize volume")
+        self.normalize.setToolTip("Turn the whole album up or down so its loudest moment is at -1 dB. Only the "
+                                  "volume changes (no compression or EQ), so the tracks keep their balance.")
+        self.normalize.setChecked(self.settings.normalize)
+        self.normalize.toggled.connect(lambda on: setattr(self.settings, "normalize", on))
+        row.addWidget(self.normalize)
         self.save_btn = QPushButton()
         self.save_btn.setMinimumHeight(40)
         self.save_btn.setStyleSheet("QPushButton { font-weight: bold; }")
@@ -1777,18 +1783,23 @@ class MainWindow(QMainWindow):
                 return
         release, out = self.release, Path(self.settings.output_dir)
         fmt, detect, low = self.settings.export_format, self.settings.detect_bpm, self.settings.bpm_low
-        pattern = self.settings.name_pattern
+        pattern, normalize = self.settings.name_pattern, self.settings.normalize
         self.settings.save()
         self.save_btn.setEnabled(False)
         self._status("Saving tracks" + (" and detecting BPM…" if detect else "…"), 0)
 
         sides = [s for rec, _ in jobs for s in self._sides_of(rec)]
 
+        gain = {"db": 0.0}
+
         def work():
+            if normalize:  # one gain for the whole album, from its loudest moment across all sides
+                gain["db"] = export.normalize_gain(max(export.measure_peak(rec.path, cuts) for rec, cuts in jobs))
             saved = []
             for rec, cuts in jobs:
                 saved += export.export_side(rec.path, cuts, release, out, fmt=fmt, bpm_low=low, detect_bpm=detect,
-                                            pattern=pattern)
+                                            pattern=pattern, gain_db=gain["db"])
+            export.write_replaygain(saved)
             return saved
 
         def done(saved: list[export.SavedTrack]):
@@ -1817,6 +1828,9 @@ class MainWindow(QMainWindow):
                      for s in saved]
             todo = [s for s in release.sides if s not in self.riplog.entries[str(release.id)]["sides_saved"]]
             more = f"\n\nStill to record: side {', '.join(todo)}" if todo else ""
+            if normalize:
+                more = (f"\n\nVolume {'raised' if gain['db'] >= 0 else 'lowered'} by {abs(gain['db']):.1f} dB: "
+                        f"the loudest moment is now at {export.NORMALIZE_TARGET_DB:g} dB.") + more
             while True:  # printing labels comes back here, so you can still go on to the next album
                 choice = self._after_save_dialog(
                     f"Saved {len(saved)} tracks to:\n{folder.parent}\n\n" + "\n".join(lines) + more,
