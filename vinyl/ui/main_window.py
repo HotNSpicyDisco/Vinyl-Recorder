@@ -24,6 +24,7 @@ import numpy as np
 from .. import (audio, discogs, export, hum, labels, library, naming, rekordbox, shortcuts, splitter, tempo,
                 tracklist)
 from ..settings import Settings
+from .labels_tab import LabelsTab
 from .print_labels import PrintLabelsDialog
 from .tracklist_editor import TracklistEditor
 from .widgets import LevelMeter, WaveformView, fmt_time
@@ -60,7 +61,7 @@ def fill_side_combo(combo: QComboBox, sides: list[str], whole: bool) -> None:
             combo.addItem(f"Disc {n}: sides {pair} in one take", pair)
     for s in sides:
         combo.addItem(f"Side {s}", s)
-TAB_ALBUM, TAB_RECORD, TAB_SPLIT = range(3)
+TAB_ALBUM, TAB_RECORD, TAB_SPLIT, TAB_LABELS = range(4)
 
 
 class _Signals(QObject):
@@ -270,6 +271,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_find_tab(), "1. Album")
         self.tabs.addTab(self._build_record_tab(), "2. Record")
         self.tabs.addTab(self._build_split_tab(), "3. Split && save")
+        self.labels_tab = LabelsTab(self)
+        self.tabs.addTab(self.labels_tab, "4. Labels")
+        self.tabs.currentChanged.connect(lambda i: i == TAB_LABELS and self.labels_tab.refresh())
         self.setCentralWidget(self.tabs)
         self._build_menu()
 
@@ -305,7 +309,7 @@ class MainWindow(QMainWindow):
         act.triggered.connect(self._open_recording)
         m.addAction(act)
         act = QAction("Print label queue…", self)
-        act.triggered.connect(lambda: self._print_labels(None))
+        act.triggered.connect(lambda: self.tabs.setCurrentIndex(TAB_LABELS))
         m.addAction(act)
         act = QAction("Add all saved albums to Rekordbox", self)
         act.triggered.connect(self._rekordbox_all)

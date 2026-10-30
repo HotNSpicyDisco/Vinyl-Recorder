@@ -177,6 +177,18 @@ class LabelQueue:
         self.items = [d for i, d in enumerate(self.items) if i not in set(indexes)]
         _write(self.path, self.items)
 
+    def move(self, index: int, step: int) -> int:
+        """Move an entry up (-1) or down (+1); returns where it ended up."""
+        to = index + step
+        if not (0 <= index < len(self.items) and 0 <= to < len(self.items)):
+            return index
+        self.items.insert(to, self.items.pop(index))
+        _write(self.path, self.items)
+        return to
+
+    def has(self, label: dict) -> bool:
+        return any(self._key(d) == self._key(label) for d in self.items)
+
     def clear(self) -> None:
         self.items = []
         _write(self.path, self.items)

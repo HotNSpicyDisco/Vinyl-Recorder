@@ -410,16 +410,17 @@ def place(tmpl: Template, records: Records, copies: int = 1, start: int = 1,
 
 def paint_pages(p: QPainter, device_dpi: float, tmpl: Template, data: Records, copies: int = 1,
                 start: int = 1, new_page=None, rotate: bool = False, outlines: bool = False,
-                max_pages: int | None = None, qr: bool = False) -> int:
+                max_pages: int | None = None, qr: bool = False, only_page: int | None = None) -> int:
     """Draw the pages on painter p (a printer, PDF or image); new_page() is called between pages.
     data: one record or several (a label queue). rotate: turn roll labels 90° for printers whose
     driver feeds labels sideways. outlines: draw every label position's edge (for the on-screen preview).
-    Returns the number of pages."""
+    only_page: draw just that page (0-based), for previewing. Returns the number of pages."""
     placed, _ = place(tmpl, data, copies, start, qr)
     pages = max(pl.page for pl in placed) + 1
     w, h = tmpl.label_w * PTS, tmpl.label_h * PTS
-    for page in range(min(pages, max_pages or pages)):
-        if page and new_page:
+    todo = [only_page] if only_page is not None else range(min(pages, max_pages or pages))
+    for page in todo:
+        if page != todo[0] and new_page:
             new_page()
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -467,15 +468,15 @@ def save_pdf(path: Path, tmpl: Template, data: Records, copies: int = 1, start: 
 
 
 def preview(tmpl: Template, data: Records, start: int = 1, dpi: int = 96, rotate: bool = False,
-            qr: bool = False) -> QImage:
-    """The first page as an image, with label outlines, for showing on screen."""
+            qr: bool = False, page: int = 0, copies: int = 1) -> QImage:
+    """One page (0-based) as an image, with label outlines, for showing on screen."""
     size = page_size(tmpl)
     if rotate and not tmpl.sheet:
         size = QSizeF(size.height(), size.width())
     img = QImage(int(size.width() * dpi), int(size.height() * dpi), QImage.Format.Format_RGB32)
     img.fill(QColor(255, 255, 255))
     p = QPainter(img)
-    paint_pages(p, dpi, tmpl, data, 1, start, rotate=rotate, outlines=True, max_pages=1, qr=qr)
+    paint_pages(p, dpi, tmpl, data, copies, start, rotate=rotate, outlines=True, qr=qr, only_page=page)
     p.end()
     return img
 
