@@ -1922,14 +1922,17 @@ class MainWindow(QMainWindow):
                     if t is not None and s is not None and part not in rec.skips]
             jobs.append((rec, cuts))
         # The same track picked for two parts would save one file over the other
-        counts: dict[str, int] = {}
+        # (by track number: some records list two tracks as just "A" and "A")
+        counts: dict[int, int] = {}
+        names: dict[int, str] = {}
         for _, cuts in jobs:
             for c in cuts:
-                counts[c.track.position] = counts.get(c.track.position, 0) + 1
-        dupes = [p for p, n in counts.items() if n > 1]
+                counts[c.track.number] = counts.get(c.track.number, 0) + 1
+                names[c.track.number] = f"{c.track.position} {c.track.title}".strip()
+        dupes = [names[n] for n, k in counts.items() if k > 1]
         if dupes:
-            self._error(f"{', '.join(dupes)} is picked for more than one part. Pick a different track for one of "
-                        "them (Title column), or use Undo track picks.")
+            self._error(f"{', '.join(dupes)} {'is' if len(dupes) == 1 else 'are each'} picked for more than one "
+                        "part. Pick a different track for one of them (Title column), or use Undo track picks.")
             return
         if not jobs:
             self._error("Nothing to save.\n\n" + "\n".join(problems))
