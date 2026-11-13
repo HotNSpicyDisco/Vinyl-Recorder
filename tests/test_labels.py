@@ -147,8 +147,8 @@ def test_qr_code_is_drawn_exactly():
 def test_preview_draws_something():
     img = labels.preview(labels.TEMPLATES_BY_ID["roll_4x2"], labels.label_data(EIGHT), dpi=50)
     assert (img.width(), img.height()) == (200, 100)
-    dark = sum(1 for x in range(0, 200, 2) for y in range(0, 100, 2) if img.pixelColor(x, y).lightness() < 100)
-    assert dark > 50  # text and lines were drawn
+    dark = sum(1 for x in range(200) for y in range(100) if img.pixelColor(x, y).lightness() < 100)
+    assert dark > 100  # text and lines were drawn (any font: about 200 at this size)
 
 
 def test_read_saved_lengths_and_bpms(tmp_path):
