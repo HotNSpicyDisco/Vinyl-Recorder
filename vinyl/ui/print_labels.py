@@ -4,7 +4,7 @@ used from the Album and Split & save tabs (PrintLabelsDialog). The Labels tab us
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPageLayout, QPixmap
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
@@ -38,6 +38,13 @@ class LabelOutput(QWidget):
             self.template.addItem(t.name, t.id)
         self.template.setCurrentIndex(max(0, self.template.findData(settings.label_template)))
         form.addRow("Labels:", self.template)
+        self.style = QComboBox()
+        for s in labels.STYLES:
+            self.style.addItem(s.name, s.id)
+        self.style.setToolTip("How big the text is and which columns the label has. "
+                              "Remembered for each label size.")
+        form.addRow("Style:", self.style)
+        self._show_style()
         self.start = QSpinBox()
         self.start.setToolTip("Using a sheet that's partly used? Start at the first free label "
                               "(counted left to right, top to bottom).")
@@ -111,6 +118,26 @@ class LabelOutput(QWidget):
         for b in (self.rotate, self.qr, self.key):
             b.toggled.connect(self.refresh)
         self.notation.currentIndexChanged.connect(self.refresh)
+        self.template.currentIndexChanged.connect(self._show_style)
+        self.style.currentIndexChanged.connect(self._style_picked)
+
+    def _show_style(self, *_):
+        """The style last used on this label size (large print on 3" labels to begin with)."""
+        t = self.tmpl()
+        self.style.blockSignals(True)
+        self.style.setCurrentIndex(max(0, self.style.findData(
+            self.settings.label_styles.get(t.id, labels.default_style(t)))))
+        self.style.blockSignals(False)
+        if _:  # another label size picked (not while setting up): show it in its style
+            self.refresh()
+
+    def _style_picked(self, *_):
+        self.settings.label_styles[self.tmpl().id] = self.label_style()
+        self.settings.save()
+        self.refresh()
+
+    def label_style(self) -> str:
+        return self.style.currentData()
 
     def key_column(self) -> str:
         """The notation for the Key column, or "" for none."""
@@ -142,7 +169,7 @@ class LabelOutput(QWidget):
             self.next_btn.setEnabled(False)
             return
         qr, copies, start = self.qr.isChecked(), self.copies.value(), self.start.value()
-        placed, _ = labels.place(t, records, copies, start, qr, self.key_column())
+        placed, _ = labels.place(t, records, copies, start, qr, self.key_column(), self.label_style())
         pages = max(p.page for p in placed) + 1
         self.page = max(0, min(self.page, pages - 1))
         what = f"{len(records)} records" if len(records) > 1 else f"{len(records[0].tracks)} tracks"
@@ -159,7 +186,8 @@ class LabelOutput(QWidget):
         rotated = self.rotate.isChecked() and not t.sheet
         width_in = size.height() if rotated else size.width()
         img = labels.preview(t, records, start, dpi=int(PREVIEW_W / width_in), rotate=rotated, qr=qr,
-                             page=self.page, copies=copies, key=self.key_column())
+                             page=self.page, copies=copies, key=self.key_column(),
+                             style=self.label_style())
         self.preview.setPixmap(QPixmap.fromImage(img))
 
     def _remember(self):
@@ -180,8 +208,7 @@ class LabelOutput(QWidget):
         last = self.settings.label_printers.get(t.id)
         if last and last in QPrinterInfo.availablePrinterNames():
             printer.setPrinterName(last)
-        printer.setFullPage(True)  # draw from the paper's corner: the labels are placed exactly
-        printer.setPageLayout(labels.page_layout(t, rotate))
+        labels.set_page(printer, t, rotate)
         printer.setDocName(f"Labels: {records[0].artist} – {records[0].title}" if len(records) == 1
                            else f"Labels: {len(records)} records")
         dlg = QPrintDialog(printer, self)
@@ -189,11 +216,11 @@ class LabelOutput(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         # Picking a printer in the dialog can swap in its default paper: put the label size back
-        printer.setPageLayout(labels.page_layout(t, rotate))
-        printer.setFullPage(True)
+        if not labels.set_page(printer, t, rotate) and not self._print_anyway(printer, t, rotate):
+            return
         try:
             labels.print_to(printer, t, records, self.copies.value(), self.start.value(), rotate,
-                            self.qr.isChecked(), self.key_column())
+                            self.qr.isChecked(), self.key_column(), self.label_style())
         except Exception as e:  # driver problems: say so instead of failing silently
             QMessageBox.warning(self, "Print labels", f"Printing failed: {e}")
             return
@@ -201,6 +228,25 @@ class LabelOutput(QWidget):
         self._remember()
         if self.printed:
             self.printed(self.queue_fn())
+
+    def _print_anyway(self, printer: QPrinter, t: labels.Template, rotate: bool) -> bool:
+        """The printer kept its own paper size: say how to fix it. True to print anyway."""
+        got = printer.pageLayout().fullRect(QPageLayout.Unit.Inch).size()
+        w, h = (t.label_h, t.label_w) if rotate else (t.label_w, t.label_h)
+        box = QMessageBox(QMessageBox.Icon.Warning, "Print labels",
+                          f"{printer.printerName()} is set to {got.width():g}\" × {got.height():g}\" paper, "
+                          f"not your {w:g}\" × {h:g}\" labels, so the labels would come out in the wrong "
+                          "places.", parent=self)
+        box.setInformativeText(
+            f"Set the label size on the printer: Windows Settings → Bluetooth & devices → Printers & "
+            f"scanners → {printer.printerName()} → Printing preferences, and set the width to {w:g}\" "
+            f"and the height (length) to {h:g}\" (on a Zebra: Page Setup → Stocks → New). "
+            "Then print again.\n\nAfter changing label rolls, calibrate the printer so it finds the gaps "
+            "between labels (on a Zebra: hold the feed button until it flashes twice).")
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        anyway = box.addButton("Print anyway", QMessageBox.ButtonRole.AcceptRole)
+        box.exec()
+        return box.clickedButton() is anyway
 
     def save_pdf(self):
         t = self.tmpl()
@@ -212,7 +258,8 @@ class LabelOutput(QWidget):
         if not path:
             return
         labels.save_pdf(Path(path), t, records, self.copies.value(), self.start.value(),
-                        self.rotate.isChecked() and not t.sheet, self.qr.isChecked(), self.key_column())
+                        self.rotate.isChecked() and not t.sheet, self.qr.isChecked(), self.key_column(),
+                        self.label_style())
         self._remember()
         QMessageBox.information(self, "Print labels", f"Saved {Path(path).name}")
         if self.printed:

@@ -139,7 +139,7 @@ class LabelsTab(QWidget):
             return
         out = self.output
         placed, _ = labels.place(out.tmpl(), self.records(), out.copies.value(), out.start.value(),
-                                 out.qr.isChecked(), out.key_column())
+                                 out.qr.isChecked(), out.key_column(), out.label_style())
         title = self.queue.items[row].get("title")
         artist = self.queue.items[row].get("artist")
         page = next((p.page for p in placed if p.first and p.lay.data.title == title and p.lay.data.artist == artist),

@@ -53,6 +53,36 @@ TEMPLATES = [
 TEMPLATES_BY_ID = {t.id: t for t in TEMPLATES}
 
 
+@dataclass(frozen=True)
+class Style:
+    """How a label looks: text sizes (times the compact size) and which columns it has."""
+    id: str
+    name: str
+    head: float = 1.0  # artist, title and the small print
+    rows: float = 1.0  # the tracklist
+    bold_rows: bool = False
+    length: bool = True
+    bpm: bool = True  # BPM box (filled in when known, else for writing in)
+    key: bool = True  # the Key box, when the Key column is ticked
+    rating: bool = True  # an empty box for your own rating
+
+
+STYLES = [
+    Style("compact", "Compact: small text, most tracks per label"),
+    Style("large", "Large print: everything bigger", 1.4, 1.45),
+    Style("booth", "DJ booth: big bold BPM and key, no length or rating", 1.35, 1.6, True, length=False,
+          rating=False),
+    Style("tracklist", "Big tracklist: tracks and lengths only, no boxes", 1.5, 1.55, bpm=False, key=False,
+          rating=False),
+]
+STYLES_BY_ID = {s.id: s for s in STYLES}
+
+
+def default_style(tmpl: Template) -> str:
+    """Large print where there's room for it (3" and taller labels), else compact."""
+    return "large" if tmpl.label_h >= 3 else "compact"
+
+
 @dataclass
 class LabelTrack:
     position: str
@@ -217,24 +247,31 @@ def discogs_url(release_id: int) -> str:
 
 
 class _Layout:
-    def __init__(self, w: float, h: float, data: LabelData, qr: bool = False, key: str = ""):
+    def __init__(self, w: float, h: float, data: LabelData, qr: bool = False, key: str = "",
+                 style: str = "compact"):
+        st = STYLES_BY_ID.get(style, STYLES[0])
         k = 1.15 if h > 3.2 * PTS else 1.0  # a little larger on 4" × 3⅓" labels
-        self.k, self.w, self.h, self.data = k, w, h, data
+        kh, kr = k * st.head, k * st.rows
+        self.k, self.w, self.h, self.data = kr, w, h, data
         self.pad = 7
         self.inner_w = w - 2 * self.pad
         # A QR code to the Discogs page sits top-right on the first label; the header wraps beside it
         self.qr = QR_SIZE * k if qr and data.release_id else 0.0
         self.head_w = self.inner_w - (self.qr + 6 if self.qr else 0)
-        self.f_head, self.f_title = _font(11 * k, True), _font(9.5 * k)
-        self.f_meta, self.f_row = _font(6.5 * k), _font(8 * k)
-        self.head, self.title_size, self.meta, self.row = 11 * k, 9.5 * k, 6.5 * k, 8 * k
-        self.has_len = any(t.length for t in data.tracks)
-        self.pos_w = max([_width(t.position, self.f_row) for t in data.tracks] + [8]) + 5
+        self.f_head, self.f_title = _font(11 * kh, True), _font(9.5 * kh)
+        self.f_meta, self.f_row = _font(6.5 * kh), _font(8 * kr, st.bold_rows)
+        self.head, self.title_size, self.meta, self.row = 11 * kh, 9.5 * kh, 6.5 * kh, 8 * kr
+        self.has_len = st.length and any(t.length for t in data.tracks)
+        self.pos_w = max([_width(t.position, self.f_row) for t in data.tracks] +
+                         [8, _width("Pos", self.f_meta)]) + 5
         self.len_w = _width("00:00", self.f_row) + 6 if self.has_len else 0
-        self.box_w, self.col_gap = 21 * k, 3
-        self.key = key  # "" = no Key column, else the notation ("classic" / "camelot")
-        boxes = 3 if key else 2
-        self.track_w = self.inner_w - self.pos_w - self.len_w - boxes * (self.box_w + self.col_gap)
+        # Boxes fit a BPM or key ("124", "F#m", "12A") at the row size, and stay big enough to write in
+        self.box_w, self.col_gap = max([21 * k] + [_width(s, self.f_row) + 6 for s in ("000", "F#m", "12A")]), 3
+        self.key = key if st.key else ""  # "" = no Key column, else the notation ("classic" / "camelot")
+        # (header, what goes in it): the boxes after the track name
+        self.boxes = ([("BPM", "bpm")] if st.bpm else []) + ([("Key", "key")] if self.key else []) + \
+                     ([("Rtg", "")] if st.rating else [])
+        self.track_w = self.inner_w - self.pos_w - self.len_w - len(self.boxes) * (self.box_w + self.col_gap)
         self.table_head_h = self.meta + 6
         self.apply(FIT_STEPS[0])
 
@@ -273,13 +310,19 @@ class _Layout:
             out.append(cur)
             return out
 
+        # The roomiest step that needs the fewest labels (big text may take an extra label rather
+        # than cutting every track name to one line)
         fewest = max(1, -(-len(tracks) // MAX_TRACKS_PER_LABEL))
+        best = None
         for step in FIT_STEPS:
             self.apply(step)
             result = pack()
+            if best is None or len(result) < len(best[1]):
+                best = (step, result)
             if len(result) <= fewest:
                 break
-        return result
+        self.apply(best[0])
+        return best[1]
 
 
 def _text(p: QPainter, x: float, baseline: float, text: str, font: QFont, max_w: float, align="left"):
@@ -348,9 +391,7 @@ def draw_label(p: QPainter, x: float, y: float, lay: _Layout, tracks: list[Label
     # Track table: Pos | Track | Len | BPM | Key | Rtg (the boxes stay drawn to write in by hand)
     x_pos, x_track = left, left + lay.pos_w
     x_len = x_track + lay.track_w
-    x_bpm = x_len + lay.len_w
-    x_key = x_bpm + lay.box_w + lay.col_gap if lay.key else None
-    x_rtg = (x_key if lay.key else x_bpm) + lay.box_w + lay.col_gap
+    x_boxes = [x_len + lay.len_w + i * (lay.box_w + lay.col_gap) for i in range(len(lay.boxes))]
     table_top = yy
     rows_top = table_top + lay.table_head_h - 1.5
     p.setPen(QPen(ink, 0.5 * UNIT))
@@ -358,7 +399,7 @@ def draw_label(p: QPainter, x: float, y: float, lay: _Layout, tracks: list[Label
     p.setPen(grey)
     hdr = table_top + lay.meta + 1.5
     heads = [(x_pos, "Pos"), (x_track, "Track")] + ([(x_len, "Len")] if lay.has_len else []) + \
-            [(x_bpm, "BPM")] + ([(x_key, "Key")] if lay.key else []) + [(x_rtg, "Rtg")]
+            [(bx, name) for bx, (name, _) in zip(x_boxes, lay.boxes)]
     for hx, h in heads:
         _text(p, hx, hdr, h, lay.f_meta, 40)
     p.setPen(QPen(ink, 0.5 * UNIT))
@@ -375,17 +416,16 @@ def draw_label(p: QPainter, x: float, y: float, lay: _Layout, tracks: list[Label
         p.setFont(lay.f_row)
         for j, line in enumerate(lines):
             p.drawText(QPointF(x_track * UNIT, (base + j * lay.line_h) * UNIT), line)
-        if t.length:
+        if t.length and lay.has_len:
             _text(p, x_len, base, t.length, lay.f_row, lay.len_w - 3)
-        p.setPen(box_pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        for bx in (x_bpm, x_key, x_rtg) if lay.key else (x_bpm, x_rtg):
+        for bx, (_, what) in zip(x_boxes, lay.boxes):
+            p.setPen(box_pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRect(QRectF(bx * UNIT, cell * UNIT, lay.box_w * UNIT, h * UNIT))
-        p.setPen(ink)
-        if t.bpm:
-            _text(p, x_bpm + lay.box_w / 2, base, t.bpm, lay.f_row, lay.box_w - 2, align="center")
-        if lay.key and t.key:
-            _text(p, x_key + lay.box_w / 2, base, key_text(t.key, lay.key), lay.f_row, lay.box_w - 2, align="center")
+            text = t.bpm if what == "bpm" else key_text(t.key, lay.key) if what == "key" else ""
+            if text:
+                p.setPen(ink)
+                _text(p, bx + lay.box_w / 2, base, text, lay.f_row, lay.box_w - 2, align="center")
         cell += h
 
 
@@ -421,14 +461,14 @@ Records = LabelData | list[LabelData]
 
 
 def place(tmpl: Template, records: Records, copies: int = 1, start: int = 1,
-          qr: bool = False, key: str = "") -> tuple[list[Placed], _Layout]:
+          qr: bool = False, key: str = "", style: str = "compact") -> tuple[list[Placed], _Layout]:
     """Where each label goes: the records one after another (each with its continuation labels).
     On sheets, `start` skips labels already used (1 = top-left). qr: add the Discogs QR code.
     Also returns the first record's layout."""
     records = records if isinstance(records, list) else [records]
     labels = []
     for data in records:
-        lay = _Layout(tmpl.label_w * PTS, tmpl.label_h * PTS, data, qr, key)
+        lay = _Layout(tmpl.label_w * PTS, tmpl.label_h * PTS, data, qr, key, style)
         chunks = lay.chunks()
         labels += [(c, i == 0, lay) for _ in range(max(1, copies)) for i, c in enumerate(chunks)]
     positions = slots(tmpl)
@@ -444,12 +484,12 @@ def place(tmpl: Template, records: Records, copies: int = 1, start: int = 1,
 def paint_pages(p: QPainter, device_dpi: float, tmpl: Template, data: Records, copies: int = 1,
                 start: int = 1, new_page=None, rotate: bool = False, outlines: bool = False,
                 max_pages: int | None = None, qr: bool = False, only_page: int | None = None,
-                key: str = "") -> int:
+                key: str = "", style: str = "compact") -> int:
     """Draw the pages on painter p (a printer, PDF or image); new_page() is called between pages.
     data: one record or several (a label queue). rotate: turn roll labels 90° for printers whose
     driver feeds labels sideways. outlines: draw every label position's edge (for the on-screen preview).
     only_page: draw just that page (0-based), for previewing. Returns the number of pages."""
-    placed, _ = place(tmpl, data, copies, start, qr, key)
+    placed, _ = place(tmpl, data, copies, start, qr, key, style)
     pages = max(pl.page for pl in placed) + 1
     w, h = tmpl.label_w * PTS, tmpl.label_h * PTS
     todo = [only_page] if only_page is not None else range(min(pages, max_pages or pages))
@@ -474,21 +514,40 @@ def paint_pages(p: QPainter, device_dpi: float, tmpl: Template, data: Records, c
     return pages
 
 
-def page_layout(tmpl: Template, rotate: bool = False) -> QPageLayout:
+def _page(tmpl: Template, rotate: bool = False) -> QPageSize:
+    """The page exactly as it comes out of the printer: for a roll, the label's width across the
+    roll and its length down it (a 4" × 3" label is 4" wide), never described as turned on its side,
+    which label drivers such as Zebra's read as a 3"-wide label."""
     size = page_size(tmpl)
     if rotate and not tmpl.sheet:
         size = QSizeF(size.height(), size.width())
-    # Describe the page as portrait plus an orientation, so drivers see the real label size
-    portrait = QSizeF(min(size.width(), size.height()), max(size.width(), size.height()))
-    orientation = (QPageLayout.Orientation.Landscape if size.width() > size.height()
-                   else QPageLayout.Orientation.Portrait)
-    return QPageLayout(QPageSize(portrait, QPageSize.Unit.Inch, f"{tmpl.label_w:g}x{tmpl.label_h:g} label"
-                                 if not tmpl.sheet else "", QPageSize.SizeMatchPolicy.ExactMatch),
-                       orientation, QMarginsF(0, 0, 0, 0))
+    return QPageSize(size, QPageSize.Unit.Inch, f"{tmpl.label_w:g}x{tmpl.label_h:g} label" if not tmpl.sheet
+                     else "", QPageSize.SizeMatchPolicy.ExactMatch)
+
+
+def page_layout(tmpl: Template, rotate: bool = False) -> QPageLayout:
+    return QPageLayout(_page(tmpl, rotate), QPageLayout.Orientation.Portrait, QMarginsF(0, 0, 0, 0))
+
+
+def set_page(printer, tmpl: Template, rotate: bool = False) -> bool:
+    """Put the label size on a QPrinter. Returns False if the printer ended up with another size.
+    Size, orientation and margins go on one at a time: Windows label drivers turn down a whole
+    page layout at once and keep their own paper (a Zebra stays on whatever it was last set to)."""
+    printer.setFullPage(True)  # draw from the paper's corner: the labels are placed exactly
+    printer.setPageSize(_page(tmpl, rotate))
+    printer.setPageOrientation(QPageLayout.Orientation.Portrait)
+    printer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Inch)
+    return page_matches(printer, tmpl, rotate)
+
+
+def page_matches(printer, tmpl: Template, rotate: bool = False) -> bool:
+    want = _page(tmpl, rotate).size(QPageSize.Unit.Inch)
+    got = printer.pageLayout().fullRect(QPageLayout.Unit.Inch).size()
+    return abs(got.width() - want.width()) < 0.05 and abs(got.height() - want.height()) < 0.05
 
 
 def save_pdf(path: Path, tmpl: Template, data: Records, copies: int = 1, start: int = 1,
-             rotate: bool = False, qr: bool = False, key: str = "") -> int:
+             rotate: bool = False, qr: bool = False, key: str = "", style: str = "compact") -> int:
     writer = QPdfWriter(str(path))
     writer.setResolution(600)
     writer.setPageLayout(page_layout(tmpl, rotate))
@@ -496,13 +555,15 @@ def save_pdf(path: Path, tmpl: Template, data: Records, copies: int = 1, start: 
     writer.setTitle(f"{first.artist} – {first.title} labels" if not isinstance(data, list) or len(data) == 1
                     else f"Labels for {len(data)} records")
     p = QPainter(writer)
-    pages = paint_pages(p, 600, tmpl, data, copies, start, writer.newPage, rotate, qr=qr, key=key)
+    pages = paint_pages(p, 600, tmpl, data, copies, start, writer.newPage, rotate, qr=qr, key=key,
+                        style=style)
     p.end()
     return pages
 
 
 def preview(tmpl: Template, data: Records, start: int = 1, dpi: int = 96, rotate: bool = False,
-            qr: bool = False, page: int = 0, copies: int = 1, key: str = "") -> QImage:
+            qr: bool = False, page: int = 0, copies: int = 1, key: str = "",
+            style: str = "compact") -> QImage:
     """One page (0-based) as an image, with label outlines, for showing on screen."""
     size = page_size(tmpl)
     if rotate and not tmpl.sheet:
@@ -511,16 +572,16 @@ def preview(tmpl: Template, data: Records, start: int = 1, dpi: int = 96, rotate
     img.fill(QColor(255, 255, 255))
     p = QPainter(img)
     paint_pages(p, dpi, tmpl, data, copies, start, rotate=rotate, outlines=True, qr=qr, only_page=page,
-                key=key)
+                key=key, style=style)
     p.end()
     return img
 
 
 def print_to(printer, tmpl: Template, data: Records, copies: int = 1, start: int = 1,
-             rotate: bool = False, qr: bool = False, key: str = "") -> int:
+             rotate: bool = False, qr: bool = False, key: str = "", style: str = "compact") -> int:
     """Print on a QPrinter already set up (and chosen in the print dialog)."""
     p = QPainter(printer)
     pages = paint_pages(p, printer.resolution(), tmpl, data, copies, start, printer.newPage, rotate, qr=qr,
-                        key=key)
+                        key=key, style=style)
     p.end()
     return pages

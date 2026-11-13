@@ -88,6 +88,15 @@ or saves a PDF.
 | Thermal roll 4" × 2" | Zebra, Rollo, Munbyn, Dymo 4XL… (black only) |
 | Thermal roll 4" × 3" | the same |
 
+Pick a **Style** for how the label looks (remembered for each label size):
+
+| Style | Looks like |
+|---|---|
+| Compact | small text, the most tracks per label (the default on 2" labels) |
+| Large print | everything about 1½ times bigger (the default on 3" labels) |
+| DJ booth | big bold track names, BPM and key; no length or rating |
+| Big tracklist | tracks and lengths only, no boxes |
+
 The **4. Labels** tab makes labels on their own, no recording needed: pick records from your
 Discogs collection (several at once), add the album you're ripping or type one in by hand, arrange
 them on the sheet, flip through the sheets in the preview, and print. Every saved album is also
@@ -96,8 +105,10 @@ prints at once. LPs are left out (DJs rarely play them out): untick **Hide LPs**
 too. On sheets, **Start at label** uses up a partly used sheet. Tick **QR code** for a small code
 linking to the record's Discogs page, and **Key column** for each track's key, in classic (Dm) or
 Camelot (7A) notation. Print
-at 100% / Actual size. For thermal printers, set the label size in the printer's driver. If the
-label comes out sideways, tick **Turn 90°**. The layout comes from the Discogs Label Maker app.
+at 100% / Actual size. Thermal printers are sent the label size (4" wide, 2" or 3" long); if the
+printer's driver won't take it, the app says so before printing and shows where to set it. If labels
+land between the stickers, calibrate the printer for the new roll (on a Zebra, hold the feed button
+until it flashes twice). If the label comes out sideways, tick **Turn 90°**. The layout comes from the Discogs Label Maker app.
 
 ![The Labels tab: pick records, arrange the sheet, print](docs/labels.png)
 

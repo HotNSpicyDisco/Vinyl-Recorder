@@ -94,6 +94,26 @@ def test_pdf_page_sizes(tmp_path):
     assert (round(float(box[0][0])), round(float(box[0][1]))) == (144, 288)
 
 
+def test_printer_gets_label_size(tmp_path):
+    from PySide6.QtGui import QPageLayout, QPageSize
+    from PySide6.QtPrintSupport import QPrinter
+
+    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+    printer.setOutputFileName(str(tmp_path / "p.pdf"))
+    roll = labels.TEMPLATES_BY_ID["roll_4x3"]
+    assert labels.set_page(printer, roll)
+    layout = printer.pageLayout()
+    # 4" across the roll, 3" down it, upright: label drivers read a turned page as a 3"-wide label
+    assert layout.orientation() == QPageLayout.Orientation.Portrait
+    assert layout.fullRect(QPageLayout.Unit.Inch).size().toTuple() == (4.0, 3.0)
+    assert labels.set_page(printer, roll, rotate=True)
+    assert layout.fullRect(QPageLayout.Unit.Inch).size().toTuple() == (4.0, 3.0)  # (a copy: unchanged)
+    assert printer.pageLayout().fullRect(QPageLayout.Unit.Inch).size().toTuple() == (3.0, 4.0)
+    printer.setPageSize(QPageSize(QPageSize.PageSizeId.Letter))  # a printer that kept its own paper
+    assert not labels.page_matches(printer, roll)
+
+
 def test_qr_code_is_drawn_exactly():
     import segno
 
@@ -140,3 +160,20 @@ def test_read_saved_lengths_and_bpms(tmp_path):
     export_side(wav, cuts, rel, tmp_path / "out", fmt="both", detect_bpm=False)
     bpms, lengths = read_saved(tmp_path / "out", rel)
     assert round(lengths[1], 1) == 9.5 and round(lengths[2], 1) == 12.0 and bpms == {}
+
+
+def test_label_styles():
+    tmpl = labels.TEMPLATES_BY_ID["roll_4x3"]
+    d = labels.label_data(EIGHT, keys={1: "F#m"})
+    lays = {s.id: labels.place(tmpl, d, key="classic", style=s.id)[1] for s in labels.STYLES}
+    assert lays["large"].row > lays["compact"].row and lays["booth"].row > lays["large"].row
+    assert [b for b, _ in lays["compact"].boxes] == ["BPM", "Key", "Rtg"]
+    assert [b for b, _ in lays["booth"].boxes] == ["BPM", "Key"] and not lays["booth"].has_len
+    assert lays["tracklist"].boxes == [] and lays["tracklist"].has_len
+    assert labels.place(tmpl, d, style="nonsense")[1].row == lays["compact"].row  # unknown: compact
+    for s in labels.STYLES:  # every style shows all eight tracks, on as many labels as it needs
+        placed, _ = labels.place(tmpl, d, key="classic", style=s.id)
+        assert sum(len(p.tracks) for p in placed) == 8
+        assert not labels.preview(tmpl, d, dpi=50, key="classic", style=s.id).isNull()
+    assert labels.default_style(tmpl) == "large"
+    assert labels.default_style(labels.TEMPLATES_BY_ID["roll_4x2"]) == "compact"
