@@ -1,4 +1,4 @@
 """Vinyl Recorder: record records, look them up on Discogs, split and tag the tracks."""
 
-__version__ = "1.5.2"
+__version__ = "1.5.3"
 HOMEPAGE = "https://github.com/HotNSpicyDisco/Vinyl-Recorder"
