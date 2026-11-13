@@ -98,7 +98,7 @@ def test_runout_left_spinning_ends_the_side(tmp_path):
 def test_no_album_keeps_going_until_stopped(tmp_path):
     rng = np.random.default_rng(2)
     r = make_recorder(tmp_path, sides=None)
-    feed(r, np.concatenate([noise(rng, 0.5, -85), noise(rng, 6, -20), runout(rng, 7), noise(rng, 1, -85)]))
+    feed(r, np.concatenate([noise(rng, 0.5, -85), noise(rng, 6, -20), runout(rng, 7), noise(rng, 2, -85)]))
     assert r.state == PAUSED and r.event is None  # waits for another side
     r.stop()
 
@@ -123,3 +123,16 @@ def test_normal_mode_records_everything(tmp_path):
     assert r.state == RECORDING
     path = r.stop()
     assert abs(sf.info(path).duration - 3) < 0.1
+
+
+def test_quiet_pressing_track_gap_isnt_a_needle_lift(tmp_path):
+    """Mark Grusane "Versions" Part Two: an 8 s gap between tracks whose groove noise dips to -72 dB
+    (well under the -63 of the rest of the gap) still isn't the needle lifting."""
+    rng = np.random.default_rng(7)
+    r = make_recorder(tmp_path, sides=2)
+    gap = np.concatenate([noise(rng, 6.5, -60), noise(rng, 1.2, -72)])
+    feed(r, np.concatenate([noise(rng, 0.5, -85), noise(rng, 8, -18), gap, noise(rng, 8, -18)]))
+    assert r.state == RECORDING and not r.side_breaks
+    feed(r, np.concatenate([runout(rng, 8), noise(rng, 2, -85)]))  # the real end: run-out, then the lift
+    assert r.state == PAUSED and len(r.side_breaks) == 1
+    r.stop()

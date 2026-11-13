@@ -97,8 +97,11 @@ SOUND_DB = -45.0  # a needle drop or music: louder than this (rumble filtered ou
 SOUND_BLOCKS = (3, 5)  # ...in 3 of the last 5 readings (run-out clicks are too short to count)
 PREROLL = 2.0  # seconds kept from just before the sound started
 RUNOUT_SECONDS = 6.0  # this long without music might be the run-out groove (or a long gap, a quiet intro)...
-NEEDLE_UP_DB = -68.0  # ...so the side only ends once the needle is lifted (quieter than any groove noise)...
-NEEDLE_UP_SECONDS = 0.5  # ...for this long,
+# ...so the side only ends once the needle is lifted: quieter than any groove noise (quiet pressings
+# dip to -72 dB between tracks; a lifted needle reads about -85)...
+NEEDLE_UP_DB = -75.0
+NEEDLE_UP_BELOW_GROOVE_DB = 10.0  # ...and this far below the gap's own groove noise...
+NEEDLE_UP_SECONDS = 1.0  # ...for this long,
 RUNOUT_MAX_SECONDS = 20.0  # or when it's been quiet this long (the run-out left spinning)
 QUIET_BELOW_MUSIC_DB = 35.0  # "without music": this far below the loudest second so far...
 QUIET_MAX_DB = -40.0  # ...and never louder than this
@@ -312,7 +315,8 @@ class Recorder:
                            and np.mean(levels > quiet) < 0.2)
             self._quiet_blocks = self._quiet_blocks + 1 if self.ending else 0
             lifted = levels[-int(NEEDLE_UP_SECONDS / LEVEL_BLOCK):]
-            needle_up = np.mean(lifted < NEEDLE_UP_DB) >= 0.8
+            needle_up = (np.mean(lifted < NEEDLE_UP_DB) >= 0.9
+                         and np.median(lifted) < np.median(levels) - NEEDLE_UP_BELOW_GROOVE_DB)
             long_quiet = self._quiet_blocks * LEVEL_BLOCK >= RUNOUT_MAX_SECONDS - RUNOUT_SECONDS
             if self.ending and (needle_up or long_quiet):
                 self._writing = self.ending = False
